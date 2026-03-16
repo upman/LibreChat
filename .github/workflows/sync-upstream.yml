@@ -1,0 +1,38 @@
+name: Sync upstream-main
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: upstream-main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync with upstream
+        run: |
+          git remote add upstream https://github.com/danny-avila/LibreChat.git
+          git fetch upstream main
+
+          LOCAL_SHA=$(git rev-parse HEAD)
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+
+          if [ "$LOCAL_SHA" = "$UPSTREAM_SHA" ]; then
+            echo "upstream-main is already up to date."
+            exit 0
+          fi
+
+          COMMIT_COUNT=$(git rev-list --count HEAD..upstream/main)
+          echo "Syncing $COMMIT_COUNT new commit(s) from upstream/main"
+
+          git reset --hard upstream/main
+          git push origin upstream-main --force
