@@ -1,0 +1,75 @@
+name: Sync upstream to main
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-sync-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for new commits
+        id: check
+        run: |
+          git fetch origin upstream-main
+          COUNT=$(git rev-list --count main..origin/upstream-main)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "main is already up to date with upstream-main."
+          fi
+
+      - name: Create merge branch and PR
+        if: steps.check.outputs.count > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="sync/upstream-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+
+          # Attempt the merge — if it conflicts, commit the conflict markers
+          # so the PR is visible and reviewable
+          if git merge origin/upstream-main --no-ff -m "chore: merge upstream $(date +%Y-%m-%d)"; then
+            BODY="$(cat <<'EOF'
+          ## Upstream sync
+
+          This PR merges the latest changes from `upstream-main` into `main`.
+
+          **Merge status:** Clean — no conflicts detected.
+          EOF
+          )"
+          else
+            # Stage conflicting files as-is so we can push
+            git add -A
+            git commit --no-edit -m "chore: merge upstream $(date +%Y-%m-%d) (conflicts)"
+            CONFLICTS=$(git diff --name-only HEAD~1)
+            BODY="$(cat <<EOF
+          ## Upstream sync
+
+          This PR merges the latest changes from \`upstream-main\` into \`main\`.
+
+          **Merge status: CONFLICTS** — manual resolution required.
+
+          **Files needing resolution:**
+          \`\`\`
+          $CONFLICTS
+          \`\`\`
+          EOF
+          )"
+          fi
+
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: sync upstream $(date +%Y-%m-%d)" \
+            --body "$BODY"

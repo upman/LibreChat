@@ -1,0 +1,88 @@
+name: Upstream conflict check
+
+on:
+  push:
+    branches: [upstream-main]
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attempt trial merge
+        id: merge
+        run: |
+          git fetch origin upstream-main
+          BEHIND=$(git rev-list --count main..origin/upstream-main)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "status=up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Try merging in a throwaway worktree so we never touch main
+          git worktree add /tmp/trial-merge main
+          cd /tmp/trial-merge
+          if git merge --no-commit --no-ff origin/upstream-main 2>/tmp/merge-output; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=conflicts" >> "$GITHUB_OUTPUT"
+            # Capture conflicting file list
+            git diff --name-only --diff-filter=U > /tmp/conflict-files
+          fi
+          git merge --abort 2>/dev/null || true
+          cd -
+          git worktree remove /tmp/trial-merge --force
+
+      - name: Report conflicts
+        if: steps.merge.outputs.status == 'conflicts'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CONFLICTS=$(cat /tmp/conflict-files)
+          BEHIND=${{ steps.merge.outputs.behind }}
+
+          BODY="$(cat <<EOF
+          **Upstream sync conflict detected**
+
+          There are **$BEHIND** new upstream commit(s) on \`upstream-main\` that conflict with \`main\`.
+
+          **Conflicting files:**
+          \`\`\`
+          $CONFLICTS
+          \`\`\`
+
+          Run the **Sync upstream to main** workflow manually to create a merge PR and resolve these conflicts.
+          EOF
+          )"
+
+          # Find or create a tracking issue
+          EXISTING=$(gh issue list --label "upstream-sync" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create \
+              --title "Upstream sync: merge conflicts detected" \
+              --label "upstream-sync" \
+              --body "$BODY"
+          fi
+
+      - name: Report clean merge available
+        if: steps.merge.outputs.status == 'clean'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BEHIND=${{ steps.merge.outputs.behind }}
+          EXISTING=$(gh issue list --label "upstream-sync" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "**Update:** upstream-main now has **$BEHIND** new commit(s) and merges cleanly into main. No conflicts."
+          fi
