@@ -2,7 +2,7 @@ name: Upstream conflict check
 
 on:
   push:
-    branches: [upstream-main]
+    branches: [upstream-dev]
 
 permissions:
   issues: write
@@ -25,8 +25,8 @@ jobs:
       - name: Attempt trial merge
         id: merge
         run: |
-          git fetch origin upstream-main
-          BEHIND=$(git rev-list --count main..origin/upstream-main)
+          git fetch origin upstream-dev
+          BEHIND=$(git rev-list --count main..origin/upstream-dev)
           echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
 
           if [ "$BEHIND" -eq 0 ]; then
@@ -37,7 +37,7 @@ jobs:
           # Try merging in a throwaway worktree so we never touch main
           git worktree add /tmp/trial-merge main
           cd /tmp/trial-merge
-          if git merge --no-commit --no-ff origin/upstream-main 2>/tmp/merge-output; then
+          if git merge --no-commit --no-ff origin/upstream-dev 2>/tmp/merge-output; then
             echo "status=clean" >> "$GITHUB_OUTPUT"
           else
             echo "status=conflicts" >> "$GITHUB_OUTPUT"
@@ -59,7 +59,7 @@ jobs:
           BODY="$(cat <<EOF
           **Upstream sync conflict detected**
 
-          There are **$BEHIND** new upstream commit(s) on \`upstream-main\` that conflict with \`main\`.
+          There are **$BEHIND** new upstream commit(s) on \`upstream-dev\` that conflict with \`main\`.
 
           **Conflicting files:**
           \`\`\`
@@ -89,5 +89,5 @@ jobs:
           BEHIND=${{ steps.merge.outputs.behind }}
           EXISTING=$(gh issue list --label "upstream-sync" --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "**Update:** upstream-main now has **$BEHIND** new commit(s) and merges cleanly into main. No conflicts."
+            gh issue comment "$EXISTING" --body "**Update:** upstream-dev now has **$BEHIND** new commit(s) and merges cleanly into main. No conflicts."
           fi

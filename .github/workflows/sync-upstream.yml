@@ -1,4 +1,4 @@
-name: Sync upstream-main
+name: Sync upstream-dev
 
 on:
   schedule:
@@ -14,25 +14,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: upstream-main
+          ref: upstream-dev
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Sync with upstream
         run: |
           git remote add upstream https://github.com/danny-avila/LibreChat.git
-          git fetch upstream main
+          git fetch upstream dev
 
           LOCAL_SHA=$(git rev-parse HEAD)
-          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          UPSTREAM_SHA=$(git rev-parse upstream/dev)
 
           if [ "$LOCAL_SHA" = "$UPSTREAM_SHA" ]; then
-            echo "upstream-main is already up to date."
+            echo "upstream-dev is already up to date."
             exit 0
           fi
 
-          COMMIT_COUNT=$(git rev-list --count HEAD..upstream/main)
-          echo "Syncing $COMMIT_COUNT new commit(s) from upstream/main"
+          COMMIT_COUNT=$(git rev-list --count HEAD..upstream/dev)
+          echo "Syncing $COMMIT_COUNT new commit(s) from upstream/dev"
 
-          git reset --hard upstream/main
-          git push origin upstream-main --force
+          git reset --hard upstream/dev
+          git push origin upstream-dev --force

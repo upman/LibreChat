@@ -25,11 +25,11 @@ jobs:
       - name: Check for new commits
         id: check
         run: |
-          git fetch origin upstream-main
-          COUNT=$(git rev-list --count main..origin/upstream-main)
+          git fetch origin upstream-dev
+          COUNT=$(git rev-list --count main..origin/upstream-dev)
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           if [ "$COUNT" -eq 0 ]; then
-            echo "main is already up to date with upstream-main."
+            echo "main is already up to date with upstream-dev."
           fi
 
       - name: Create merge branch and PR
@@ -42,11 +42,11 @@ jobs:
 
           # Attempt the merge — if it conflicts, commit the conflict markers
           # so the PR is visible and reviewable
-          if git merge origin/upstream-main --no-ff -m "chore: merge upstream $(date +%Y-%m-%d)"; then
+          if git merge origin/upstream-dev --no-ff -m "chore: merge upstream $(date +%Y-%m-%d)"; then
             BODY="$(cat <<'EOF'
           ## Upstream sync
 
-          This PR merges the latest changes from `upstream-main` into `main`.
+          This PR merges the latest changes from `upstream-dev` into `main`.
 
           **Merge status:** Clean — no conflicts detected.
           EOF
@@ -59,7 +59,7 @@ jobs:
             BODY="$(cat <<EOF
           ## Upstream sync
 
-          This PR merges the latest changes from \`upstream-main\` into \`main\`.
+          This PR merges the latest changes from \`upstream-dev\` into \`main\`.
 
           **Merge status: CONFLICTS** — manual resolution required.
 
