@@ -14,9 +14,21 @@ export const SYSTEM_TENANT_ID = '__SYSTEM__';
  */
 export const tenantStorage = new AsyncLocalStorage<TenantContext>();
 
-/** Returns the current tenant ID from async context, or undefined if none is set */
+/**
+ * Returns the current tenant ID from async context.
+ * Falls back to `DEFAULT_TENANT_ID` env var for single-tenant deployments
+ * or local testing without the full multi-tenancy auth stack.
+ */
 export function getTenantId(): string | undefined {
-  return tenantStorage.getStore()?.tenantId;
+  return tenantStorage.getStore()?.tenantId ?? process.env.DEFAULT_TENANT_ID;
+}
+
+/**
+ * Runs a function in an explicit tenant context.
+ * Used for tenant provisioning at startup when `DEFAULT_TENANT_ID` is set.
+ */
+export function runAsTenant<T>(tenantId: string, fn: () => Promise<T>): Promise<T> {
+  return tenantStorage.run({ tenantId }, fn);
 }
 
 /**

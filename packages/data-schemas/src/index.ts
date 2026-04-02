@@ -23,6 +23,7 @@ export {
   tenantStorage,
   getTenantId,
   runAsSystem,
+  runAsTenant,
   scopedCacheKey,
   SYSTEM_TENANT_ID,
 } from './config/tenantContext';

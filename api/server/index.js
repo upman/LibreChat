@@ -9,7 +9,7 @@ const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const mongoSanitize = require('express-mongo-sanitize');
-const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { logger, runAsSystem, runAsTenant } = require('@librechat/data-schemas');
 const {
   isEnabled,
   apiNotFound,
@@ -68,10 +68,23 @@ const startServer = async () => {
     );
   }
 
-  await runAsSystem(seedDatabase);
+  const { DEFAULT_TENANT_ID } = process.env;
+  const tenantProvision = DEFAULT_TENANT_ID
+    ? (fn) => runAsTenant(DEFAULT_TENANT_ID, fn)
+    : runAsSystem;
+
+  if (DEFAULT_TENANT_ID) {
+    logger.warn(
+      `[TenantContext] DEFAULT_TENANT_ID="${DEFAULT_TENANT_ID}" is set. ` +
+        'All database operations are scoped to this tenant. ' +
+        'Documents without a tenantId field will not be queryable.',
+    );
+  }
+
+  await tenantProvision(seedDatabase);
   const appConfig = await getAppConfig({ baseOnly: true });
   initializeFileStorage(appConfig);
-  await runAsSystem(async () => {
+  await tenantProvision(async () => {
     await performStartupChecks(appConfig);
     await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
   });
@@ -226,7 +239,7 @@ const startServer = async () => {
       await initializeMCPs();
       await initializeOAuthReconnectManager();
     });
-    await checkMigrations();
+    await tenantProvision(checkMigrations);
 
     // Configure stream services (auto-detects Redis from USE_REDIS env var)
     const streamServices = createStreamServices();

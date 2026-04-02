@@ -10,7 +10,7 @@ const express = require('express');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
-const { logger } = require('@librechat/data-schemas');
+const { logger, runAsSystem, runAsTenant } = require('@librechat/data-schemas');
 const mongoSanitize = require('express-mongo-sanitize');
 const {
   isEnabled,
@@ -217,14 +217,29 @@ if (cluster.isMaster) {
     app.disable('x-powered-by');
     app.set('trust proxy', trusted_proxy);
 
-    /** Seed database (idempotent) */
-    await seedDatabase();
+    const { DEFAULT_TENANT_ID } = process.env;
+    const tenantProvision = DEFAULT_TENANT_ID
+      ? (fn) => runAsTenant(DEFAULT_TENANT_ID, fn)
+      : (fn) => fn();
 
-    /** Initialize app configuration */
+    if (DEFAULT_TENANT_ID) {
+      logger.warn(
+        `[TenantContext] DEFAULT_TENANT_ID="${DEFAULT_TENANT_ID}" is set. ` +
+          'All database operations are scoped to this tenant. ' +
+          'Documents without a tenantId field will not be queryable.',
+      );
+    }
+
+    /** Seed database — tenant-scoped when DEFAULT_TENANT_ID is set */
+    await tenantProvision(seedDatabase);
+
+    /** Initialize app configuration (no DB) */
     const appConfig = await getAppConfig();
     initializeFileStorage(appConfig);
     await performStartupChecks(appConfig);
-    await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
+    await tenantProvision(async () => {
+      await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
+    });
 
     /** Load index.html for SPA serving */
     const indexPath = path.join(appConfig.paths.dist, 'index.html');
@@ -362,10 +377,13 @@ if (cluster.isMaster) {
         }:${port}`,
       );
 
-      /** Initialize MCP servers and OAuth reconnection for this worker */
-      await initializeMCPs();
-      await initializeOAuthReconnectManager();
-      await checkMigrations();
+      /** Initialize MCP servers and OAuth reconnection — shared operator config */
+      await runAsSystem(async () => {
+        await initializeMCPs();
+        await initializeOAuthReconnectManager();
+      });
+      /** Migrations write tenant-scoped ACL entries */
+      await tenantProvision(checkMigrations);
     });
 
     /** Handle inter-process messages from master */
