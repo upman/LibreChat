@@ -17,7 +17,8 @@ defaults:
     shell: bash
 
 env:
-  COMPONENT_NAME: 'aiml-private-librechat'
+  COMPONENT_NAME: 'aiml-librechat-private'
+  ECR_REPO: 'aiml-librechat'
 
 jobs:
   build-docker:
@@ -50,4 +51,4 @@ jobs:
           context: .
           file: Dockerfile
           target: node
-          ecr_repo: ${{ env.COMPONENT_NAME }}
+          ecr_repo: ${{ env.ECR_REPO }}

@@ -20,7 +20,7 @@ inputs:
     description: Docker build target for multi-stage builds (e.g., node)
   ecr_repo:
     required: true
-    description: ECR repository name (e.g., aiml-private-librechat)
+    description: ECR repository name (e.g., aiml-librechat)
 
 outputs:
   version:
