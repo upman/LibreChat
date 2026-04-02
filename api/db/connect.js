@@ -1,9 +1,14 @@
 require('dotenv').config();
 const { isEnabled } = require('@librechat/api');
-const { logger } = require('@librechat/data-schemas');
+const {
+  logger,
+  getAutoEncryptionOptions,
+  bootstrapEncryption,
+} = require('@librechat/data-schemas');
 
 const mongoose = require('mongoose');
 const MONGO_URI = process.env.MONGO_URI;
+const BOOTSTRAP_RETRY_MS = 5_000;
 
 if (!MONGO_URI) {
   throw new Error('Please define the MONGO_URI environment variable');
@@ -45,12 +50,18 @@ mongoose.connection.on('error', (err) => {
 });
 
 async function connectDb() {
-  if (cached.conn && cached.conn?._readyState === 1) {
-    return cached.conn;
-  }
+  const encryption = getAutoEncryptionOptions();
 
+  if (cached.conn && cached.conn?._readyState === 1) {
+    if (!encryption || cached.encryptionReady) {
+      return cached.conn;
+    }
+    // Connection is live but bootstrap hasn't completed — fall through to retry
+  }
   const disconnected = cached.conn && cached.conn?._readyState !== 1;
   if (!cached.promise || disconnected) {
+    cached.encryptionReady = false;
+    cached.lastBootstrapError = null;
     const opts = {
       bufferCommands: false,
       ...(maxPoolSize ? { maxPoolSize } : {}),
@@ -60,20 +71,45 @@ async function connectDb() {
       ...(waitQueueTimeoutMS ? { waitQueueTimeoutMS } : {}),
       ...(autoIndex != undefined ? { autoIndex } : {}),
       ...(autoCreate != undefined ? { autoCreate } : {}),
-      // useNewUrlParser: true,
-      // useUnifiedTopology: true,
-      // bufferMaxEntries: 0,
-      // useFindAndModify: true,
-      // useCreateIndex: true
+      ...(encryption ? { autoEncryption: encryption.options } : {}),
     };
     logger.info('Mongo Connection options');
-    logger.info(JSON.stringify(opts, null, 2));
+    const loggableOpts = encryption
+      ? {
+          ...opts,
+          autoEncryption: {
+            ...opts.autoEncryption,
+            kmsProviders: '[REDACTED]',
+          },
+        }
+      : opts;
+    logger.info(JSON.stringify(loggableOpts, null, 2));
     mongoose.set('strictQuery', true);
-    cached.promise = mongoose.connect(MONGO_URI, opts).then((mongoose) => {
-      return mongoose;
-    });
+    cached.promise = mongoose.connect(MONGO_URI, opts);
   }
   cached.conn = await cached.promise;
+
+  if (encryption && !cached.encryptionReady) {
+    if (cached.lastBootstrapError && Date.now() - cached.lastBootstrapError < BOOTSTRAP_RETRY_MS) {
+      throw new Error('[connectDb] Encryption bootstrap unavailable — retry deferred');
+    }
+    if (!cached.bootstrapPromise) {
+      const client = cached.conn.connection.getClient();
+      cached.bootstrapPromise = bootstrapEncryption(client, encryption.config)
+        .then(() => {
+          cached.encryptionReady = true;
+          cached.lastBootstrapError = null;
+        })
+        .catch((err) => {
+          cached.lastBootstrapError = Date.now();
+          throw err;
+        })
+        .finally(() => {
+          cached.bootstrapPromise = null;
+        });
+    }
+    await cached.bootstrapPromise;
+  }
 
   return cached.conn;
 }

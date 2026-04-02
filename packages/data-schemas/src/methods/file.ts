@@ -1,8 +1,10 @@
-import logger from '../config/winston';
 import { EToolResources, FileContext } from 'librechat-data-provider';
 import type { FilterQuery, SortOrder, Model } from 'mongoose';
 import type { IMongoFile } from '~/types/file';
+import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { encryptDocumentsForBulk } from '~/encryption/plugin';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import logger from '../config/winston';
 
 /** Factory function that takes mongoose instance and returns the file methods */
 export function createFileMethods(mongoose: typeof import('mongoose')) {
@@ -316,6 +318,12 @@ export function createFileMethods(mongoose: typeof import('mongoose')) {
     }
 
     const File = mongoose.models.File as Model<IMongoFile>;
+
+    const tenantId = getTenantId();
+    if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
+      await encryptDocumentsForBulk('File', updates as Record<string, unknown>[], tenantId);
+    }
+
     const bulkOperations = updates.map((update) => ({
       updateOne: {
         filter: { file_id: update.file_id },

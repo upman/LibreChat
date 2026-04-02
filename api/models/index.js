@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { createMethods } = require('@librechat/data-schemas');
+const { createMethods, getEncryptionService, getTenantId } = require('@librechat/data-schemas');
 const { matchModelName, findMatchingPattern } = require('@librechat/api');
 const getLogStores = require('~/cache/getLogStores');
 
@@ -14,6 +14,12 @@ const seedDatabase = async () => {
   await methods.seedDefaultRoles();
   await methods.ensureDefaultCategories();
   await methods.seedSystemGrants();
+
+  const tenantId = getTenantId();
+  const service = getEncryptionService();
+  if (service && tenantId) {
+    await service.createKey({ tenantId });
+  }
 };
 
 module.exports = {

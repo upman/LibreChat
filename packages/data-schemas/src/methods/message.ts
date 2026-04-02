@@ -1,8 +1,10 @@
 import type { DeleteResult, FilterQuery, Model } from 'mongoose';
-import logger from '~/config/winston';
-import { createTempChatExpirationDate } from '~/utils/tempChatRetention';
-import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import type { AppConfig, IMessage } from '~/types';
+import { createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { encryptDocumentsForBulk } from '~/encryption/plugin';
+import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import logger from '~/config/winston';
 
 /** Simple UUID v4 regex to replace zod validation */
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -90,6 +92,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
+      delete update.tenantId;
 
       if (isTemporary) {
         try {
@@ -158,14 +161,23 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   ) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
-      const bulkOps = messages.map((message) => ({
-        updateOne: {
-          filter: { messageId: message.messageId },
-          update: message,
-          timestamps: !overrideTimestamp,
-          upsert: true,
-        },
-      }));
+
+      const tenantId = getTenantId();
+      if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
+        await encryptDocumentsForBulk('Message', messages, tenantId);
+      }
+
+      const bulkOps = messages.map((message) => {
+        const { tenantId: _tenantId, ...messageWithoutTenant } = message;
+        return {
+          updateOne: {
+            filter: { messageId: messageWithoutTenant.messageId },
+            update: messageWithoutTenant,
+            timestamps: !overrideTimestamp,
+            upsert: true,
+          },
+        };
+      });
       const result = await tenantSafeBulkWrite(Message, bulkOps);
       return result;
     } catch (err) {
@@ -194,7 +206,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   }) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
-      const message = {
+      const message: Record<string, unknown> = {
         user,
         endpoint,
         messageId,
@@ -202,6 +214,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         parentMessageId,
         ...rest,
       };
+      delete message.tenantId;
 
       return await Message.findOneAndUpdate({ user, messageId }, message, {
         upsert: true,
@@ -239,7 +252,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   ) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
-      const { messageId, ...update } = message;
+      const { messageId, tenantId: _tenantId, ...update } = message;
       const updatedMessage = await Message.findOneAndUpdate({ messageId, user: userId }, update, {
         new: true,
       });

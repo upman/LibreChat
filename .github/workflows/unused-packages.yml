@@ -14,10 +14,13 @@ jobs:
   detect-unused-packages:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Use Node.js 20.x
         uses: actions/setup-node@v4

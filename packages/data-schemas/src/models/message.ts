@@ -1,10 +1,12 @@
 import type * as t from '~/types';
 import { applyTenantIsolation } from '~/models/plugins/tenantIsolation';
+import { applyEncryption } from '~/encryption/plugin';
 import mongoMeili from '~/models/plugins/mongoMeili';
 import messageSchema from '~/schema/message';
 
 export function createMessageModel(mongoose: typeof import('mongoose')) {
   applyTenantIsolation(messageSchema);
+  applyEncryption(messageSchema, 'Message');
   if (process.env.MEILI_HOST && process.env.MEILI_MASTER_KEY) {
     messageSchema.plugin(mongoMeili, {
       mongoose,

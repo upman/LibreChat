@@ -29,3 +29,16 @@ export {
 } from './config/tenantContext';
 export type { TenantContext } from './config/tenantContext';
 export { dropSupersededTenantIndexes, dropSupersededPromptGroupIndexes } from './migrations';
+export {
+  getEncryptionService,
+  getEncryptionConfig,
+  getAutoEncryptionOptions,
+  bootstrapEncryption,
+  initializeEncryptionService,
+  encryptDocumentsForBulk,
+  KmsUnavailableError,
+  encryptedFieldMap,
+  KEY_VAULT_NAMESPACE,
+  ALGORITHM_RANDOM,
+} from './encryption';
+export type { IEncryptionService, EncryptionContext, EncryptionConfig } from './encryption';

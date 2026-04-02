@@ -85,6 +85,7 @@
     "b:test:api": "cd api && bun run b:test",
     "b:balance": "bun config/add-balance.js",
     "b:list-balances": "bun config/list-balances.js",
+    "generate-encryption-key": "node config/generate-encryption-key.js",
     "reset-terms": "node config/reset-terms.js",
     "flush-cache": "node config/flush-cache.js",
     "migrate:agent-permissions:dry-run": "node config/migrate-agent-permissions.js --dry-run",

@@ -1,0 +1,108 @@
+# CSFLE encryption testing with LocalStack KMS (real AWS KMS wire protocol).
+#
+# Setup:
+#   1. Add LOCALSTACK_AUTH_TOKEN to .env
+#   2. Start:  docker compose -f docker-compose.yml -f docker-compose.encryption.yml up --build
+#   3. That's it — LocalStack creates a KMS key automatically.
+#
+# What happens:
+#   - LocalStack starts with KMS on port 4566 (HTTPS with self-signed cert)
+#   - init-localstack creates a CMK and writes the ARN to a shared volume
+#   - The api container reads the ARN, trusts LocalStack's CA cert, and connects
+#   - All CSFLE operations (DEK create, encrypt, decrypt) go through LocalStack KMS
+#
+# Verify:
+#   1. Send a message through the UI at http://localhost:3080
+#   2. docker exec -it chat-mongodb mongosh LibreChat --quiet --eval \
+#        "db.messages.findOne({}, { text: 1, content: 1, _id: 0 })"
+#      → text/content should be Binary.createFromBase64(...), not plaintext
+#   3. The message should display normally in the UI (driver auto-decrypts)
+#
+# Clean restart (wipes LocalStack CMK + DEK cache + MongoDB keyVault):
+#   docker compose -f docker-compose.yml -f docker-compose.encryption.yml down -v
+#   docker compose -f docker-compose.yml -f docker-compose.encryption.yml up --build -d mongodb
+#   docker exec chat-mongodb mongosh encryption --quiet --eval "db.getCollection('__keyVault').drop()"
+#   docker compose -f docker-compose.yml -f docker-compose.encryption.yml up --build
+#
+#   Why: LocalStack's CMK is ephemeral (lives in a Docker volume). If the volume
+#   is destroyed but MongoDB's ./data-node persists, existing DEKs in __keyVault
+#   reference a CMK that no longer exists. Dropping __keyVault lets ensureKey()
+#   create fresh DEKs wrapped by the new CMK.
+#
+#   In production this cannot happen — the CMK lives permanently in AWS KMS.
+
+services:
+  api:
+    build: .
+    depends_on:
+      mongodb:
+        condition: service_started
+      init-localstack:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/app/config/entrypoint-encryption.sh"]
+    environment:
+      - HOST=0.0.0.0
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - MEILI_HOST=http://meilisearch:7700
+      - RAG_PORT=${RAG_PORT:-8000}
+      - RAG_API_URL=http://rag_api:${RAG_PORT:-8000}
+      - ENCRYPTION_PROVIDER=aws
+      - AWS_KMS_ACCESS_KEY_ID=test
+      - AWS_KMS_SECRET_ACCESS_KEY=test
+      - AWS_KMS_REGION=us-east-1
+      - AWS_KMS_ENDPOINT=kms.localhost.localstack.cloud:4566
+      - AWS_KMS_TLS_CA_FILE=/shared/localstack-ca.pem
+      - DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID:-test-tenant}
+      # AWS_KMS_KEY_ARN is set by entrypoint-encryption.sh from /shared/kms-key-arn
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /app/.env
+      - ./images:/app/client/public/images
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+      - ./config/entrypoint-encryption.sh:/app/config/entrypoint-encryption.sh:ro
+      - shared-kms:/shared
+
+  localstack:
+    container_name: localstack
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    networks:
+      default:
+        aliases:
+          - kms.localhost.localstack.cloud
+    environment:
+      - SERVICES=kms
+      - DEFAULT_REGION=us-east-1
+      - EAGER_SERVICE_LOADING=1
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "awslocal", "kms", "list-keys", "--region", "us-east-1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  init-localstack:
+    container_name: init-localstack
+    image: localstack/localstack:latest
+    depends_on:
+      localstack:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/scripts/init-localstack.sh"]
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    volumes:
+      - ./config/init-localstack.sh:/scripts/init-localstack.sh:ro
+      - shared-kms:/shared
+      - localstack-data:/var/lib/localstack:ro
+
+volumes:
+  shared-kms:
+  localstack-data:
