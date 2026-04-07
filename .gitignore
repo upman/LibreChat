@@ -178,3 +178,4 @@ claude-flow
 hive-mind-prompt-*.txt
 CLAUDE.md
 .gsd
+localstack-data/

@@ -52,7 +52,18 @@ services:
       - AWS_KMS_REGION=us-east-1
       - AWS_KMS_ENDPOINT=kms.localhost.localstack.cloud:4566
       - AWS_KMS_TLS_CA_FILE=/shared/localstack-ca.pem
-      - DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID:-test-tenant}
+      - CHC_INT_ENABLED=${CHC_INT_ENABLED:-true}
+      - CP_API_BASE_URL=${CP_API_BASE_URL:-https://control-plane-internal.clickhouse-dev.com}
+      - TENANT_ISOLATION_STRICT=${TENANT_ISOLATION_STRICT:-true}
+      - OPENID_REUSE_TOKENS=true
+      - OPENID_CALLBACK_URL=/oauth/openid/callback
+      - OPENID_SCOPE=openid profile email offline_access
+      - OPENID_USE_END_SESSION_ENDPOINT=true
+      - OPENID_AUTO_REDIRECT=true
+      - OPENID_ISSUER=https://auth.control-plane-local.clickhouse-dev.com
+      - OPENID_AUDIENCE=librechat
+      - OPENID_CLIENT_ID=8G2SJ8ptDxqfxCNEbWVQXD15zo66bJqu
+      - OPENID_BUTTON_LABEL=Continue with ClickHouse
       # AWS_KMS_KEY_ARN is set by entrypoint-encryption.sh from /shared/kms-key-arn
     volumes:
       - type: bind
@@ -63,12 +74,19 @@ services:
       - ./logs:/app/logs
       - ./config/entrypoint-encryption.sh:/app/config/entrypoint-encryption.sh:ro
       - shared-kms:/shared
+    configs:
+      - source: librechat-config
+        target: /app/librechat.yaml
+
+  mongodb:
+    ports:
+      - "27018:27017"
 
   localstack:
     container_name: localstack
     image: localstack/localstack:latest
     ports:
-      - "4566:4566"
+      - "14566:4566"
     networks:
       default:
         aliases:
@@ -77,9 +95,10 @@ services:
       - SERVICES=kms
       - DEFAULT_REGION=us-east-1
       - EAGER_SERVICE_LOADING=1
+      - PERSISTENCE=1
       - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
     volumes:
-      - localstack-data:/var/lib/localstack
+      - ./localstack-data:/var/lib/localstack
     healthcheck:
       test: ["CMD", "awslocal", "kms", "list-keys", "--region", "us-east-1"]
       interval: 5s
@@ -101,8 +120,24 @@ services:
     volumes:
       - ./config/init-localstack.sh:/scripts/init-localstack.sh:ro
       - shared-kms:/shared
-      - localstack-data:/var/lib/localstack:ro
+      - ./localstack-data:/var/lib/localstack:ro
+
+configs:
+  librechat-config:
+    content: |
+      version: 1.3.6
+      mcpSettings:
+        allowedDomains:
+          - 'host.docker.internal'
+          - 'localhost'
+      mcpServers:
+        clickhouse:
+          type: streamable-http
+          url: "http://host.docker.internal:5446/mcp"
+          requiresOAuth: false
+          startup: false
+          headers:
+            Authorization: "Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}"
 
 volumes:
   shared-kms:
-  localstack-data:
