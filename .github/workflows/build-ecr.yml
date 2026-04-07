@@ -3,7 +3,7 @@ name: Build and Push to ECR
 on:
   push:
     tags:
-      - '*'
+      - 'v[0-9]*'
   workflow_dispatch:
 
 permissions: write-all
@@ -32,13 +32,17 @@ jobs:
 
       - name: Compute version
         id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            RAW_TAG="${REF_NAME}"
           else
-            LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
-            echo "version=${LATEST_TAG}" >> $GITHUB_OUTPUT
+            RAW_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
           fi
+          VERSION="${RAW_TAG#v}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "image_tag=librechat-private-${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Prepare environment
         run: cp .env.example .env
@@ -47,6 +51,7 @@ jobs:
         uses: ./.github/actions/docker-build
         with:
           version: ${{ steps.version.outputs.version }}
+          image_tag: ${{ steps.version.outputs.image_tag }}
           aws_role_arn: ${{ vars.AWS_DEPLOYMENT_ROLE_ARN }}
           context: .
           file: Dockerfile

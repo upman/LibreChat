@@ -4,7 +4,10 @@ description: Build and push a Docker image to ECR
 inputs:
   version:
     required: true
-    description: Image tag version
+    description: Numeric version (e.g., 1.0.0) used as the app_version build-arg
+  image_tag:
+    required: true
+    description: Docker image tag (e.g., librechat-private-1.0.0)
   aws_role_arn:
     required: true
     description: AWS IAM role ARN for ECR access
@@ -56,4 +59,4 @@ runs:
         target: ${{ inputs.target }}
         provenance: false
         push: true
-        tags: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repo }}:${{ inputs.version }}
+        tags: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repo }}:${{ inputs.image_tag }}
