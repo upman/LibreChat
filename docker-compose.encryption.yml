@@ -53,7 +53,7 @@ services:
       - AWS_KMS_ENDPOINT=kms.localhost.localstack.cloud:4566
       - AWS_KMS_TLS_CA_FILE=/shared/localstack-ca.pem
       - CHC_INT_ENABLED=${CHC_INT_ENABLED:-true}
-      - CP_API_BASE_URL=${CP_API_BASE_URL:-https://control-plane-internal.clickhouse-dev.com}
+      - CP_API_BASE_URL=${CP_API_BASE_URL:-http://host.docker.internal:3000}
       - TENANT_ISOLATION_STRICT=${TENANT_ISOLATION_STRICT:-true}
       - OPENID_REUSE_TOKENS=true
       - OPENID_CALLBACK_URL=/oauth/openid/callback
