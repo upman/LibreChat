@@ -441,3 +441,7 @@ export const getAllEffectivePermissions = (resourceType: ResourceType) =>
 // SharePoint Graph API Token
 export const graphToken = (scopes: string) =>
   `${BASE_URL}/api/auth/graph-token?scopes=${encodeURIComponent(scopes)}`;
+
+// CP (ClickHouse Cloud) integration
+export const cpOrgs = () => `${BASE_URL}/api/cp/orgs`;
+export const cpSwitchOrg = () => `${BASE_URL}/api/cp/switch-org`;

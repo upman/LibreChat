@@ -47,3 +47,26 @@ export interface ChcSessionDetails {
   orgFeatures: Record<string, string[]>;
   orgRolesV2: Record<string, CpRBACRole[]>;
 }
+
+/** Lightweight UI-facing slice of CpOrganizationSummary, enriched with `isCurrent`. */
+export interface CpOrg {
+  id: string;
+  name: string;
+  isCurrent: boolean;
+}
+
+export interface CpOrgsResponse {
+  orgs: CpOrg[];
+}
+
+export interface CpTenantUserSummary {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  tenantId: string;
+}
+
+export interface CpSwitchOrgResponse {
+  user: CpTenantUserSummary;
+}

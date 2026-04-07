@@ -3,6 +3,7 @@ import type * as t from './types';
 import * as endpoints from './api-endpoints';
 import * as a from './types/assistants';
 import * as ag from './types/agents';
+import * as chc from './types/chc';
 import * as m from './types/mutations';
 import * as q from './types/queries';
 import * as f from './types/files';
@@ -1092,4 +1093,14 @@ export interface ActiveJobsResponse {
 
 export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
   return request.get(endpoints.activeJobs());
+};
+
+/* CP (ClickHouse Cloud) Integration */
+
+export const getCpOrgs = (): Promise<chc.CpOrgsResponse> => {
+  return request.get(endpoints.cpOrgs());
+};
+
+export const switchCpOrg = (targetOrgId: string): Promise<chc.CpSwitchOrgResponse> => {
+  return request.post(endpoints.cpSwitchOrg(), { targetOrgId });
 };

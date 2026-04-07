@@ -1050,3 +1050,14 @@ export const useAcceptTermsMutation = (
     onMutate: options?.onMutate,
   });
 };
+
+export const useSwitchCpOrgMutation = (options?: {
+  onSuccess?: (data: t.CpSwitchOrgResponse) => void;
+  onError?: (err: unknown) => void;
+}) => {
+  return useMutation(
+    [MutationKeys.switchCpOrg],
+    (targetOrgId: string) => dataService.switchCpOrg(targetOrgId),
+    options,
+  );
+};

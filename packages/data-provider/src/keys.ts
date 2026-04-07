@@ -65,6 +65,8 @@ export enum QueryKeys {
   activeJobs = 'activeJobs',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
+  /* CP Integration */
+  cpOrgs = 'cpOrgs',
 }
 
 // Dynamic query keys that require parameters
@@ -97,4 +99,5 @@ export enum MutationKeys {
   enableTwoFactor = 'enableTwoFactor',
   verifyTwoFactor = 'verifyTwoFactor',
   updateMemoryPreferences = 'updateMemoryPreferences',
+  switchCpOrg = 'switchCpOrg',
 }

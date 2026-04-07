@@ -535,3 +535,11 @@ export const useUserTermsQuery = (
     ...config,
   });
 };
+
+export const useGetCpOrgsQuery = (config?: UseQueryOptions<t.CpOrgsResponse>) => {
+  return useQuery<t.CpOrgsResponse>([QueryKeys.cpOrgs], () => dataService.getCpOrgs(), {
+    staleTime: 1000 * 60 * 5,
+    refetchOnWindowFocus: false,
+    ...config,
+  });
+};

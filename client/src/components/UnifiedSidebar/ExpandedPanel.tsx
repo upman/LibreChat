@@ -6,11 +6,13 @@ import { Skeleton, Sidebar, Button, TooltipAnchor, NewChatIcon } from '@librecha
 import type { NavLink } from '~/common';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { useActivePanel, resolveActivePanel } from '~/Providers';
+import { useGetStartupConfig } from '~/data-provider';
 import { useLocalize, useNewConvo } from '~/hooks';
 import { clearMessagesCache, cn } from '~/utils';
 import store from '~/store';
 
 const AccountSettings = lazy(() => import('~/components/Nav/AccountSettings'));
+const OrgSwitcher = lazy(() => import('~/components/Nav/OrgSwitcher'));
 
 const NewChatButton = memo(function NewChatButton() {
   const localize = useLocalize();
@@ -118,6 +120,7 @@ function ExpandedPanel({
   onExpand?: () => void;
 }) {
   const localize = useLocalize();
+  const { data: startupConfig } = useGetStartupConfig();
   const { active, setActive } = useActivePanel();
   const effectiveActive = resolveActivePanel(active, links);
 
@@ -158,7 +161,12 @@ function ExpandedPanel({
         ))}
       </div>
 
-      <div className="mt-auto">
+      <div className="mt-auto flex flex-col gap-1">
+        {startupConfig?.chcIntEnabled === true && (
+          <Suspense fallback={<Skeleton className="h-9 w-9 rounded-lg" />}>
+            <OrgSwitcher />
+          </Suspense>
+        )}
         <Suspense fallback={<Skeleton className="h-9 w-9 rounded-lg" />}>
           <AccountSettings collapsed />
         </Suspense>
