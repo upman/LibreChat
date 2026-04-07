@@ -4,6 +4,7 @@ import type { SystemCapability } from '~/types/admin';
 import type { ISystemGrant } from '~/types';
 import { SystemCapabilities, CapabilityImplications } from '~/admin/capabilities';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { normalizePrincipalId } from '~/utils/principal';
 import logger from '~/config/winston';
 
@@ -363,13 +364,15 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       try {
         const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
         const now = new Date();
+        const currentTenantId = getTenantId();
+        const isPlatformScope = !currentTenantId || currentTenantId === SYSTEM_TENANT_ID;
         const ops = Object.values(SystemCapabilities).map((capability) => ({
           updateOne: {
             filter: {
               principalType: PrincipalType.ROLE,
               principalId: SystemRoles.ADMIN,
               capability,
-              tenantId: { $exists: false },
+              ...(isPlatformScope ? { tenantId: { $exists: false } } : {}),
             },
             update: {
               $setOnInsert: {

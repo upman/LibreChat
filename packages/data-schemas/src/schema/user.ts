@@ -147,11 +147,16 @@ const userSchema = new Schema<IUser>(
     /** Field for external source identification (for consistency with TPrincipal schema) */
     idOnTheSource: {
       type: String,
-      sparse: true,
     },
     tenantId: {
       type: String,
       index: true,
+    },
+    resolvedAt: {
+      type: Date,
+    },
+    lastTenantId: {
+      type: String,
     },
   },
   { timestamps: true },
@@ -159,6 +164,11 @@ const userSchema = new Schema<IUser>(
 
 userSchema.index({ email: 1, tenantId: 1 }, { unique: true });
 userSchema.index({ role: 1, tenantId: 1 });
+userSchema.index(
+  { idOnTheSource: 1, tenantId: 1 },
+  { unique: true, partialFilterExpression: { idOnTheSource: { $type: 'string' } } },
+);
+userSchema.index({ openidId: 1, updatedAt: -1 }, { sparse: true });
 
 const oAuthIdFields = [
   'googleId',

@@ -68,6 +68,14 @@ const startServer = async () => {
     );
   }
 
+  if (isEnabled(process.env.CHC_INT_ENABLED) && !isEnabled(process.env.OPENID_REUSE_TOKENS)) {
+    throw new Error(
+      '[Startup] CHC_INT_ENABLED requires OPENID_REUSE_TOKENS=true. ' +
+        'CHC auth uses Auth0 JWT validation via the openidJwt strategy, ' +
+        'which is only registered when OPENID_REUSE_TOKENS is enabled.',
+    );
+  }
+
   const { DEFAULT_TENANT_ID } = process.env;
   const tenantProvision = DEFAULT_TENANT_ID
     ? (fn) => runAsTenant(DEFAULT_TENANT_ID, fn)
@@ -86,7 +94,9 @@ const startServer = async () => {
   initializeFileStorage(appConfig);
   await tenantProvision(async () => {
     await performStartupChecks(appConfig);
-    await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
+    if (!isEnabled(process.env.TENANT_ISOLATION_STRICT) || DEFAULT_TENANT_ID) {
+      await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
+    }
   });
 
   const indexPath = path.join(appConfig.paths.dist, 'index.html');
@@ -198,6 +208,7 @@ const startServer = async () => {
 
   app.use('/api/tags', routes.tags);
   app.use('/api/mcp', routes.mcp);
+  app.use('/api/cp', routes.cp);
 
   /** 404 for unmatched API routes */
   app.use('/api', apiNotFound);

@@ -2,7 +2,14 @@ const cookies = require('cookie');
 const jwt = require('jsonwebtoken');
 const openIdClient = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
-const { isEnabled, findOpenIDUser } = require('@librechat/api');
+const {
+  isEnabled,
+  findOpenIDUser,
+  resolveChcRefreshUser,
+  refreshChcContext,
+  setChcTokenCookie,
+  shouldUseSecureCookie,
+} = require('@librechat/api');
 const {
   requestPasswordReset,
   setOpenIDAuthTokens,
@@ -12,6 +19,7 @@ const {
 } = require('~/server/services/AuthService');
 const {
   deleteAllUserSessions,
+  generateToken,
   getUserById,
   findSession,
   updateUser,
@@ -85,41 +93,87 @@ const refreshController = async (req, res) => {
         refreshParams,
       );
       const claims = tokenset.claims();
-      const { user, error, migration } = await findOpenIDUser({
-        findUser,
-        email: getOpenIdEmail(claims),
-        openidId: claims.sub,
-        idOnTheSource: claims.oid,
-        strategyName: 'refreshController',
-      });
 
-      logger.debug(
-        `[refreshController] findOpenIDUser result: user=${user?.email ?? 'null'}, error=${error ?? 'null'}, migration=${migration}, userOpenidId=${user?.openidId ?? 'null'}, claimsSub=${claims.sub}`,
-      );
+      let user;
 
-      if (error || !user) {
-        logger.warn(
-          `[refreshController] Redirecting to /login: error=${error ?? 'null'}, user=${user ? 'exists' : 'null'}`,
+      if (isEnabled(process.env.CHC_INT_ENABLED)) {
+        user = await resolveChcRefreshUser(parsedCookies.token, process.env.JWT_SECRET, {
+          getUserById,
+          updateUser,
+        });
+
+        if (!user) {
+          logger.warn('[refreshController] CHC mode: no valid session, redirecting to login');
+          return res.status(401).redirect('/login');
+        }
+
+        if (user.openidId && user.openidId !== claims.sub) {
+          logger.warn(
+            `[refreshController] CHC mode: identity mismatch — cookie user openidId=${user.openidId} vs claims.sub=${claims.sub}`,
+          );
+          return res.status(401).redirect('/login');
+        }
+      } else {
+        const result = await findOpenIDUser({
+          findUser,
+          email: getOpenIdEmail(claims),
+          openidId: claims.sub,
+          idOnTheSource: claims.oid,
+          strategyName: 'refreshController',
+        });
+
+        logger.debug(
+          `[refreshController] findOpenIDUser result: user=${result.user?.email ?? 'null'}, error=${result.error ?? 'null'}, migration=${result.migration}, claimsSub=${claims.sub}`,
         );
-        return res.status(401).redirect('/login');
+
+        if (result.error || !result.user) {
+          logger.warn(
+            `[refreshController] Redirecting to /login: error=${result.error ?? 'null'}, user=${result.user ? 'exists' : 'null'}`,
+          );
+          return res.status(401).redirect('/login');
+        }
+
+        user = result.user;
+
+        if (result.migration || user.openidId !== claims.sub) {
+          const reason = result.migration ? 'migration' : 'openidId mismatch';
+          await updateUser(user._id.toString(), {
+            provider: 'openid',
+            openidId: claims.sub,
+          });
+          logger.info(
+            `[refreshController] Updated user ${user.email} openidId (${reason}): ${user.openidId ?? 'null'} -> ${claims.sub}`,
+          );
+        }
       }
 
-      // Handle migration: update user with openidId if found by email without openidId
-      // Also handle case where user has mismatched openidId (e.g., after database switch)
-      if (migration || user.openidId !== claims.sub) {
-        const reason = migration ? 'migration' : 'openidId mismatch';
-        await updateUser(user._id.toString(), {
-          provider: 'openid',
-          openidId: claims.sub,
+      /** Refresh cached GUSD data and re-derive role from live CP state */
+      if (isEnabled(process.env.CHC_INT_ENABLED) && tokenset.access_token) {
+        const refreshResult = await refreshChcContext(user, tokenset.access_token, {
+          getUserById,
+          updateUser,
         });
-        logger.info(
-          `[refreshController] Updated user ${user.email} openidId (${reason}): ${user.openidId ?? 'null'} -> ${claims.sub}`,
-        );
+        if (refreshResult?.role) {
+          user.role = refreshResult.role;
+        }
       }
 
       const token = setOpenIDAuthTokens(tokenset, req, res, user._id.toString(), refreshToken);
 
-      const { password: _pw, __v: _v, totpSecret: _ts, backupCodes: _bc, ...safeUser } = user;
+      if (isEnabled(process.env.CHC_INT_ENABLED)) {
+        await setChcTokenCookie(user, res, { generateToken, shouldUseSecureCookie });
+      }
+
+      const {
+        password: _pw,
+        __v: _v,
+        totpSecret: _ts,
+        backupCodes: _bc,
+        idOnTheSource: _idos,
+        resolvedAt: _ra,
+        lastTenantId: _lt,
+        ...safeUser
+      } = user;
       return res.status(200).send({ token, user: safeUser });
     } catch (error) {
       logger.error('[refreshController] OpenID token refresh error', error);
@@ -135,7 +189,10 @@ const refreshController = async (req, res) => {
 
   try {
     const payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user = await getUserById(payload.id, '-password -__v -totpSecret -backupCodes');
+    const user = await getUserById(
+      payload.id,
+      '-password -__v -totpSecret -backupCodes -resolvedAt -lastTenantId',
+    );
     if (!user) {
       return res.status(401).redirect('/login');
     }

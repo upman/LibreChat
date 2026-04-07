@@ -130,6 +130,15 @@ const flushRedisCache = async () => {
  * Manages worker processes and handles graceful shutdowns
  */
 if (cluster.isMaster) {
+  if (isEnabled(process.env.CHC_INT_ENABLED) && !isEnabled(process.env.OPENID_REUSE_TOKENS)) {
+    logger.error(
+      '[Startup] CHC_INT_ENABLED requires OPENID_REUSE_TOKENS=true. ' +
+        'CHC auth uses Auth0 JWT validation via the openidJwt strategy, ' +
+        'which is only registered when OPENID_REUSE_TOKENS is enabled.',
+    );
+    process.exit(1);
+  }
+
   logger.info(wrapLogMessage(`Master ${process.pid} is starting...`));
   logger.info(`Spawning ${workers} workers to simulate multi-pod environment`);
 
@@ -237,9 +246,11 @@ if (cluster.isMaster) {
     const appConfig = await getAppConfig();
     initializeFileStorage(appConfig);
     await performStartupChecks(appConfig);
-    await tenantProvision(async () => {
-      await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
-    });
+    if (!isEnabled(process.env.TENANT_ISOLATION_STRICT) || DEFAULT_TENANT_ID) {
+      await tenantProvision(async () => {
+        await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
+      });
+    }
 
     /** Load index.html for SPA serving */
     const indexPath = path.join(appConfig.paths.dist, 'index.html');
@@ -341,6 +352,7 @@ if (cluster.isMaster) {
     app.use('/api/permissions', routes.accessPermissions);
     app.use('/api/tags', routes.tags);
     app.use('/api/mcp', routes.mcp);
+    app.use('/api/cp', routes.cp);
 
     /** 404 for unmatched API routes */
     app.use('/api', apiNotFound);

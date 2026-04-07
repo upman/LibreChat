@@ -15,6 +15,7 @@ jest.mock('~/strategies', () => ({ getOpenIdConfig: jest.fn(), getOpenIdEmail: j
 jest.mock('openid-client', () => ({ refreshTokenGrant: jest.fn() }));
 jest.mock('~/models', () => ({
   deleteAllUserSessions: jest.fn(),
+  generateToken: jest.fn().mockResolvedValue('mock-chc-token'),
   getUserById: jest.fn(),
   findSession: jest.fn(),
   updateUser: jest.fn(),
@@ -23,10 +24,19 @@ jest.mock('~/models', () => ({
 jest.mock('@librechat/api', () => ({
   isEnabled: jest.fn(),
   findOpenIDUser: jest.fn(),
+  resolveChcRefreshUser: jest.fn(),
+  refreshChcContext: jest.fn().mockResolvedValue(undefined),
+  setChcTokenCookie: jest.fn().mockResolvedValue(undefined),
+  shouldUseSecureCookie: jest.fn().mockReturnValue(false),
 }));
 
 const openIdClient = require('openid-client');
-const { isEnabled, findOpenIDUser } = require('@librechat/api');
+const {
+  isEnabled,
+  findOpenIDUser,
+  resolveChcRefreshUser,
+  refreshChcContext,
+} = require('@librechat/api');
 const { graphTokenController, refreshController } = require('./AuthController');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const { setOpenIDAuthTokens } = require('~/server/services/AuthService');
@@ -178,7 +188,16 @@ describe('refreshController – OpenID path', () => {
   beforeEach(() => {
     jest.clearAllMocks();
 
-    isEnabled.mockReturnValue(true);
+    /**
+     * isEnabled returns true for OPENID_REUSE_TOKENS (to enter the OpenID refresh path)
+     * but false for CHC_INT_ENABLED (these tests exercise the standard non-CHC flow).
+     * CHC_INT_ENABLED is not set in the test env, so it's undefined.
+     */
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    delete process.env.CHC_INT_ENABLED;
+    isEnabled.mockImplementation(
+      (val) => val !== undefined && val !== null && val !== '' && val !== 'false',
+    );
     getOpenIdConfig.mockReturnValue({ some: 'config' });
     openIdClient.refreshTokenGrant.mockResolvedValue(mockTokenset);
     mockTokenset.claims.mockReturnValue(baseClaims);
@@ -197,6 +216,11 @@ describe('refreshController – OpenID path', () => {
       send: jest.fn().mockReturnThis(),
       redirect: jest.fn(),
     };
+  });
+
+  afterEach(() => {
+    delete process.env.OPENID_REUSE_TOKENS;
+    delete process.env.CHC_INT_ENABLED;
   });
 
   it('should call getOpenIdEmail with token claims and use result for findOpenIDUser', async () => {
@@ -314,5 +338,67 @@ describe('refreshController – OpenID path', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.send).toHaveBeenCalledWith('Refresh token not provided');
+  });
+
+  describe('CHC mode', () => {
+    beforeEach(() => {
+      process.env.CHC_INT_ENABLED = 'true';
+    });
+
+    afterEach(() => {
+      delete process.env.CHC_INT_ENABLED;
+    });
+
+    it('rejects with 401 when cookie user openidId mismatches claims.sub', async () => {
+      resolveChcRefreshUser.mockResolvedValue({
+        _id: 'user-db-id',
+        openidId: 'auth0|user-A',
+        role: 'USER',
+      });
+      mockTokenset.claims.mockReturnValue({ ...baseClaims, sub: 'auth0|user-B' });
+
+      await refreshController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.redirect).toHaveBeenCalledWith('/login');
+    });
+
+    it('proceeds when cookie user openidId matches claims.sub', async () => {
+      resolveChcRefreshUser.mockResolvedValue({
+        ...defaultUser,
+        openidId: baseClaims.sub,
+      });
+      refreshChcContext.mockResolvedValue({ role: 'USER' });
+
+      await refreshController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('proceeds when cookie user has no openidId (legacy doc)', async () => {
+      resolveChcRefreshUser.mockResolvedValue({
+        ...defaultUser,
+        openidId: undefined,
+      });
+      refreshChcContext.mockResolvedValue(undefined);
+
+      await refreshController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('applies refreshed role to response body', async () => {
+      resolveChcRefreshUser.mockResolvedValue({
+        ...defaultUser,
+        openidId: baseClaims.sub,
+        role: 'USER',
+      });
+      refreshChcContext.mockResolvedValue({ role: 'ADMIN' });
+
+      await refreshController(req, res);
+
+      const sentPayload = res.send.mock.calls[0][0];
+      expect(sentPayload.user.role).toBe('ADMIN');
+    });
   });
 });

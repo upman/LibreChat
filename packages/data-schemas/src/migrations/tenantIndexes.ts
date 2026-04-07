@@ -22,6 +22,7 @@ const SUPERSEDED_INDEXES: Record<string, string[]> = {
     'githubId_1',
     'discordId_1',
     'appleId_1',
+    'idOnTheSource_1',
   ],
   roles: ['name_1'],
   agents: ['id_1'],

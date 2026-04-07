@@ -21,4 +21,16 @@ export type RequestBody = {
 export type ServerRequest = Request<unknown, unknown, RequestBody> & {
   user?: IUser;
   config?: AppConfig;
+  /** CHC per-request context — set by requireChcContext middleware */
+  chcUserId?: string;
+  tenantId?: string;
+  /** Fresh GUSD-resolved context, attached by requireChcContext for downstream use */
+  cpContext?: import('../cp/types').ResolvedCpContext;
+  session: Request['session'] & {
+    openidTokens?: {
+      accessToken?: string;
+      refreshToken?: string;
+      idToken?: string;
+    };
+  };
 };

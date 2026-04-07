@@ -3,10 +3,10 @@ const jwksRsa = require('jwks-rsa');
 const { logger } = require('@librechat/data-schemas');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SystemRoles } = require('librechat-data-provider');
-const { isEnabled, findOpenIDUser, math } = require('@librechat/api');
+const { isEnabled, findOpenIDUser, resolveChcStrategyUser, math } = require('@librechat/api');
 const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const { getOpenIdEmail } = require('./openidStrategy');
-const { updateUser, findUser } = require('~/models');
+const { updateUser, findUser, findUsers } = require('~/models');
 
 /**
  * @function openIdJwtLogin
@@ -52,13 +52,21 @@ const openIdJwtLogin = (openIdConfig) => {
         const authHeader = req.headers.authorization;
         const rawToken = authHeader?.replace('Bearer ', '');
 
-        const { user, error, migration } = await findOpenIDUser({
-          findUser,
-          email: payload ? getOpenIdEmail(payload) : undefined,
-          openidId: payload?.sub,
-          idOnTheSource: payload?.oid,
-          strategyName: 'openIdJwtLogin',
-        });
+        const { user, error, migration } = isEnabled(process.env.CHC_INT_ENABLED)
+          ? await resolveChcStrategyUser(findOpenIDUser, {
+              findUser,
+              findUsers,
+              email: payload ? getOpenIdEmail(payload) : undefined,
+              openidId: payload?.sub,
+              idOnTheSource: payload?.oid,
+            })
+          : await findOpenIDUser({
+              findUser,
+              email: payload ? getOpenIdEmail(payload) : undefined,
+              openidId: payload?.sub,
+              idOnTheSource: payload?.oid,
+              strategyName: 'openIdJwtLogin',
+            });
 
         if (error) {
           done(null, false, { message: error });

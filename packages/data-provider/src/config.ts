@@ -1709,6 +1709,18 @@ export enum ErrorTypes {
    */
   AUTH_FAILED = 'auth_failed',
   /**
+   * CHC: No organization with LibreChat enabled
+   */
+  NO_ELIGIBLE_ORG = 'no_eligible_org',
+  /**
+   * CHC: Authentication/provisioning with ClickHouse Cloud failed
+   */
+  CHC_AUTH_FAILED = 'chc_auth_failed',
+  /**
+   * CHC: Current tenant/org is not eligible but user may have other eligible orgs
+   */
+  TENANT_NOT_ELIGIBLE = 'tenant_not_eligible',
+  /**
    * Model refused to respond (content policy violation)
    */
   REFUSAL = 'refusal',

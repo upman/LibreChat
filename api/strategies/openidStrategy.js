@@ -5,7 +5,7 @@ const passport = require('passport');
 const client = require('openid-client');
 const jwtDecode = require('jsonwebtoken/decode');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const { hashToken, logger } = require('@librechat/data-schemas');
+const { hashToken, logger, runAsSystem } = require('@librechat/data-schemas');
 const { Strategy: OpenIDStrategy } = require('openid-client/passport');
 const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider');
 const {
@@ -579,7 +579,31 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error('User does not exist');
   }
 
-  if (!user) {
+  if (!user && isEnabled(process.env.CHC_INT_ENABLED)) {
+    /**
+     * CHC mode: do NOT write a landing doc to the database. Return an in-memory
+     * user object with the tokenset attached. The real per-tenant doc is created
+     * in oauth.js by findOrCreateTenantUser after GUSD resolves the target org.
+     * We must return early to avoid the avatar download and updateUser(undefined)
+     * calls below, which require a persisted user with _id.
+     */
+    return {
+      provider: 'openid',
+      openidId: userinfo.sub,
+      username,
+      email: email || '',
+      emailVerified: userinfo.email_verified || false,
+      name: fullName,
+      idOnTheSource: userinfo.oid,
+      tokenset,
+      federatedTokens: {
+        access_token: tokenset.access_token,
+        id_token: tokenset.id_token,
+        refresh_token: tokenset.refresh_token,
+        expires_at: tokenset.expires_at,
+      },
+    };
+  } else if (!user) {
     user = {
       provider: 'openid',
       openidId: userinfo.sub,
@@ -726,7 +750,16 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
 function createOpenIDCallback(existingUsersOnly) {
   return async (tokenset, done) => {
     try {
-      const user = await processOpenIDAuth(tokenset, existingUsersOnly);
+      /**
+       * In CHC mode, the OAuth callback runs before any tenant is known.
+       * The user lookup/creation must bypass tenant isolation — the "landing"
+       * doc created here is tenant-less. The real per-tenant doc is created
+       * later in oauth.js by findOrCreateTenantUser after GUSD resolves.
+       */
+      const authFn = () => processOpenIDAuth(tokenset, existingUsersOnly);
+      const user = isEnabled(process.env.CHC_INT_ENABLED)
+        ? await runAsSystem(authFn)
+        : await authFn();
       done(null, user);
     } catch (err) {
       if (err.message === 'Email domain not allowed') {

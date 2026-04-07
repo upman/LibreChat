@@ -47,6 +47,8 @@ export * from './storage';
 export * from './tools';
 /* web search */
 export * from './web';
+/* CP (Control Plane) */
+export * from './cp';
 /* Cache */
 export * from './cache';
 /* Stream */

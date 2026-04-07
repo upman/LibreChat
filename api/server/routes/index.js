@@ -31,8 +31,10 @@ const auth = require('./auth');
 const keys = require('./keys');
 const user = require('./user');
 const mcp = require('./mcp');
+const cp = require('./cp');
 
 module.exports = {
+  cp,
   mcp,
   auth,
   adminAuth,

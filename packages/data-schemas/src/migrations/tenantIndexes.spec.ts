@@ -43,6 +43,10 @@ describe('dropSupersededTenantIndexes', () => {
         { unique: true, sparse: true, name: 'discordId_1' },
       );
       await users.createIndex({ appleId: 1 }, { unique: true, sparse: true, name: 'appleId_1' });
+      await users.createIndex(
+        { idOnTheSource: 1 },
+        { unique: true, sparse: true, name: 'idOnTheSource_1' },
+      );
 
       await db.createCollection('roles');
       await db.collection('roles').createIndex({ name: 1 }, { unique: true, name: 'name_1' });
@@ -290,11 +294,12 @@ describe('dropSupersededTenantIndexes', () => {
       }
     });
 
-    it('users collection lists all 9 OAuth ID indexes plus email', () => {
-      expect(SUPERSEDED_INDEXES.users).toHaveLength(9);
+    it('users collection lists all OAuth ID indexes plus email and idOnTheSource', () => {
+      expect(SUPERSEDED_INDEXES.users).toHaveLength(10);
       expect(SUPERSEDED_INDEXES.users).toContain('email_1');
       expect(SUPERSEDED_INDEXES.users).toContain('googleId_1');
       expect(SUPERSEDED_INDEXES.users).toContain('openidId_1');
+      expect(SUPERSEDED_INDEXES.users).toContain('idOnTheSource_1');
     });
   });
 });

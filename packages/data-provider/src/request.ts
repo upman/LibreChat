@@ -4,6 +4,8 @@ import { setTokenHeader } from './headers-helpers';
 import * as endpoints from './api-endpoints';
 import type * as t from './types';
 
+let _isRedirectingForTenantError = false;
+
 async function _get<T>(url: string, options?: AxiosRequestConfig): Promise<T> {
   const response = await axios.get(url, { ...options });
   return response.data;
@@ -106,6 +108,20 @@ if (typeof window !== 'undefined') {
         !window.location.pathname.startsWith('/share/')
       ) {
         return Promise.reject(error);
+      }
+
+      if (
+        error.response.status === 403 &&
+        error.response.data?.error_code === 'TENANT_NOT_ELIGIBLE' &&
+        !_isRedirectingForTenantError
+      ) {
+        _isRedirectingForTenantError = true;
+        window.location.href =
+          '/login?error=tenant_not_eligible&error_description=' +
+          encodeURIComponent(
+            error.response.data?.error || 'LibreChat is not enabled for the current organization',
+          );
+        return new Promise(() => {});
       }
 
       if (error.response.status === 401 && !originalRequest._retry) {

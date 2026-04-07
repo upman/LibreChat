@@ -53,6 +53,8 @@ export interface IUser extends Document {
   tenantId?: string;
   federatedTokens?: OIDCTokens;
   openidTokens?: OIDCTokens;
+  resolvedAt?: Date;
+  lastTenantId?: string;
 }
 
 export interface OIDCTokens {
