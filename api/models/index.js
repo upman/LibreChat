@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 const {
   isEnabled,
   matchModelName,
@@ -11,13 +10,18 @@ const {
   SYSTEM_TENANT_ID,
   getEncryptionService,
 } = require('@librechat/data-schemas');
+const { writerMongoose, readerMongoose } = require('~/db/connect');
 const getLogStores = require('~/cache/getLogStores');
 
-const methods = createMethods(mongoose, {
+const methodsDeps = {
   matchModelName,
   findMatchingPattern,
   getCache: getLogStores,
-});
+};
+
+const methods = createMethods(writerMongoose, methodsDeps);
+const readerMethods =
+  readerMongoose !== writerMongoose ? createMethods(readerMongoose, methodsDeps) : methods;
 
 const provisionDeps = {
   initializeRoles: methods.initializeRoles,
@@ -52,4 +56,5 @@ module.exports = {
   ...methods,
   seedDatabase,
   provisionDeps,
+  dbReader: readerMethods,
 };

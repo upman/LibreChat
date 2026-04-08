@@ -8,6 +8,7 @@ const {
 
 const mongoose = require('mongoose');
 const MONGO_URI = process.env.MONGO_URI;
+const MONGO_READER_URI = process.env.MONGO_READER_URI || MONGO_URI;
 const BOOTSTRAP_RETRY_MS = 5_000;
 
 if (!MONGO_URI) {
@@ -34,61 +35,172 @@ const autoCreate =
   process.env.MONGO_AUTO_CREATE != undefined
     ? isEnabled(process.env.MONGO_AUTO_CREATE) || false
     : undefined;
+
+/** Whether a separate reader endpoint is configured. */
+const hasReaderEndpoint = Boolean(process.env.MONGO_READER_URI) && MONGO_READER_URI !== MONGO_URI;
+
+/** Writer uses the global mongoose singleton (backward compatible with all existing code and tests). */
+const writerMongoose = mongoose;
+
+/** Shared connection pool options (used by both writer and reader). */
+const poolOpts = {
+  bufferCommands: false,
+  ...(maxPoolSize ? { maxPoolSize } : {}),
+  ...(minPoolSize ? { minPoolSize } : {}),
+  ...(maxConnecting ? { maxConnecting } : {}),
+  ...(maxIdleTimeMS ? { maxIdleTimeMS } : {}),
+  ...(waitQueueTimeoutMS ? { waitQueueTimeoutMS } : {}),
+};
+
 /**
  * Global is used here to maintain a cached connection across hot reloads
  * in development. This prevents connections growing exponentially
  * during API Route usage.
+ *
+ * Both the writer connection state and the reader Mongoose instance are
+ * stored on `global` so they survive module re-evaluation during hot reloads.
  */
 let cached = global.mongoose;
 
 if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null };
+  cached = global.mongoose = {
+    conn: null,
+    reader: null,
+    writerPromise: null,
+    readerPromise: null,
+    writerListenerAttached: false,
+    readerListenerAttached: false,
+    encryptionReady: false,
+    lastBootstrapError: null,
+    lastReaderError: null,
+    bootstrapPromise: null,
+    readerConfigLogged: false,
+  };
 }
 
-mongoose.connection.on('error', (err) => {
-  logger.error('[connectDb] MongoDB connection error:', err);
-});
+/**
+ * Reader is an independent instance for routing reads to a replica endpoint.
+ * When no separate reader URI is configured, reuses the writer to avoid
+ * duplicate connection pools in local dev.
+ * Cached on global to survive hot reloads.
+ */
+const readerMongoose = hasReaderEndpoint
+  ? cached.reader || (cached.reader = new mongoose.Mongoose())
+  : mongoose;
+
+// Attach error listeners once (guarded to prevent accumulation on hot reload)
+if (!cached.writerListenerAttached) {
+  mongoose.connection.on('error', (err) => {
+    logger.error('[connectDb] MongoDB writer connection error:', err);
+  });
+  cached.writerListenerAttached = true;
+}
+
+if (hasReaderEndpoint && !cached.readerListenerAttached) {
+  readerMongoose.connection.on('error', (err) => {
+    logger.error('[connectDb] MongoDB reader connection error:', err);
+  });
+  cached.readerListenerAttached = true;
+}
+
+readerMongoose.set('strictQuery', true);
+
+/** Returns the connection.readyState for a Mongoose instance (0=disconnected, 1=connected, 2=connecting, 3=disconnecting). */
+function getReadyState(instance) {
+  return instance && instance.connection ? instance.connection.readyState : 0;
+}
 
 async function connectDb() {
+  if (!cached.readerConfigLogged) {
+    cached.readerConfigLogged = true;
+    if (hasReaderEndpoint) {
+      logger.info('Mongo reader endpoint configured (separate from writer)');
+    } else if (process.env.MONGO_READER_URI) {
+      logger.info('Mongo reader endpoint: explicitly set to same URI as writer');
+    } else {
+      logger.info('Mongo reader endpoint: using writer (MONGO_READER_URI not configured)');
+    }
+  }
+
   const encryption = getAutoEncryptionOptions();
 
-  if (cached.conn && cached.conn?._readyState === 1) {
+  const writerReady = cached.writerPromise && getReadyState(writerMongoose) === 1;
+  const readerReady = !hasReaderEndpoint || getReadyState(readerMongoose) === 1;
+
+  // Both connections ready; return early unless encryption bootstrap is pending
+  if (writerReady && readerReady) {
     if (!encryption || cached.encryptionReady) {
       return cached.conn;
     }
-    // Connection is live but bootstrap hasn't completed — fall through to retry
+    // Connections live but encryption bootstrap pending — fall through
   }
-  const disconnected = cached.conn && cached.conn?._readyState !== 1;
-  if (!cached.promise || disconnected) {
+
+  // State 0 = truly disconnected; state 2 (connecting) is in-flight and should not trigger a new connect
+  const writerDisconnected = cached.writerPromise && getReadyState(writerMongoose) === 0;
+  const readerDisconnected = hasReaderEndpoint && getReadyState(readerMongoose) === 0;
+
+  // Connect or reconnect writer independently
+  if (!cached.writerPromise || writerDisconnected) {
     cached.encryptionReady = false;
     cached.lastBootstrapError = null;
-    const opts = {
-      bufferCommands: false,
-      ...(maxPoolSize ? { maxPoolSize } : {}),
-      ...(minPoolSize ? { minPoolSize } : {}),
-      ...(maxConnecting ? { maxConnecting } : {}),
-      ...(maxIdleTimeMS ? { maxIdleTimeMS } : {}),
-      ...(waitQueueTimeoutMS ? { waitQueueTimeoutMS } : {}),
+
+    const encryptionOpts = encryption ? { autoEncryption: encryption.options } : {};
+    const writerOpts = {
+      ...poolOpts,
       ...(autoIndex != undefined ? { autoIndex } : {}),
       ...(autoCreate != undefined ? { autoCreate } : {}),
-      ...(encryption ? { autoEncryption: encryption.options } : {}),
+      ...encryptionOpts,
     };
-    logger.info('Mongo Connection options');
+
+    logger.info('Mongo Connection options (writer)');
     const loggableOpts = encryption
       ? {
-          ...opts,
+          ...writerOpts,
           autoEncryption: {
-            ...opts.autoEncryption,
+            ...writerOpts.autoEncryption,
             kmsProviders: '[REDACTED]',
           },
         }
-      : opts;
+      : writerOpts;
     logger.info(JSON.stringify(loggableOpts, null, 2));
-    mongoose.set('strictQuery', true);
-    cached.promise = mongoose.connect(MONGO_URI, opts);
-  }
-  cached.conn = await cached.promise;
 
+    mongoose.set('strictQuery', true);
+    cached.writerPromise = mongoose.connect(MONGO_URI, writerOpts);
+  }
+
+  // Connect or reconnect reader independently (non-fatal — reader unavailability must not block startup)
+  if (hasReaderEndpoint && (!cached.readerPromise || readerDisconnected)) {
+    if (cached.lastReaderError && Date.now() - cached.lastReaderError < BOOTSTRAP_RETRY_MS) {
+      logger.debug('[connectDb] Reader reconnect deferred — backoff active');
+    } else {
+      const encryptionOpts = encryption ? { autoEncryption: encryption.options } : {};
+      const readerOpts = {
+        ...poolOpts,
+        ...encryptionOpts,
+        readPreference: 'secondaryPreferred',
+        autoIndex: false,
+        autoCreate: false,
+      };
+
+      cached.readerPromise = readerMongoose
+        .connect(MONGO_READER_URI, readerOpts)
+        .then((conn) => {
+          cached.lastReaderError = null;
+          return conn;
+        })
+        .catch((err) => {
+          cached.lastReaderError = Date.now();
+          logger.warn(
+            '[connectDb] Reader connection failed, dbReader methods will be unavailable:',
+            err,
+          );
+        });
+    }
+  }
+
+  cached.conn = await cached.writerPromise;
+
+  // Encryption key bootstrap is writer-only; reader auto-decrypts via autoEncryption opts
   if (encryption && !cached.encryptionReady) {
     if (cached.lastBootstrapError && Date.now() - cached.lastBootstrapError < BOOTSTRAP_RETRY_MS) {
       throw new Error('[connectDb] Encryption bootstrap unavailable — retry deferred');
@@ -116,4 +228,6 @@ async function connectDb() {
 
 module.exports = {
   connectDb,
+  writerMongoose,
+  readerMongoose,
 };
