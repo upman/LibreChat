@@ -19,7 +19,12 @@ export type { RefreshUserMethods } from './refresh';
 export type { StrategyUserMethods, StrategyLookupResult } from './strategy';
 
 export { fetchUserSessionDetails } from './client';
-export { resolveGUSD, LIBRECHAT_ORG_FEATURE, ORG_MANAGE_PERMISSION } from './resolve';
+export {
+  resolveGUSD,
+  LIBRECHAT_ORG_FEATURE,
+  ORG_MANAGE_PERMISSION,
+  V1_ADMIN_ROLE,
+} from './resolve';
 export { resolveTenant } from './tenant';
 export { requireChcContext, invalidateSession } from './middleware';
 export { requireChcIdentity } from './identity';

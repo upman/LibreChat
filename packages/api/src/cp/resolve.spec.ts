@@ -1,4 +1,9 @@
-import { resolveGUSD, LIBRECHAT_ORG_FEATURE, ORG_MANAGE_PERMISSION } from './resolve';
+import {
+  LIBRECHAT_ORG_FEATURE,
+  ORG_MANAGE_PERMISSION,
+  V1_ADMIN_ROLE,
+  resolveGUSD,
+} from './resolve';
 
 import type { GUSDResponse, CpRBACPolicy, CpRBACRole, CpOrganizationSummary } from './types';
 
@@ -194,5 +199,141 @@ describe('resolveGUSD', () => {
     const result = resolveGUSD(response);
 
     expect(result.adminOrgIds).toEqual([]);
+  });
+
+  describe('V1 orgRoles fallback', () => {
+    it('falls back to V1 ADMIN role for non-migrated org when orgRolesV2 has no entry', () => {
+      const response = buildResponse({
+        orgFeatures: { 'org-a': [LIBRECHAT_ORG_FEATURE] },
+        orgRoles: { 'org-a': V1_ADMIN_ROLE },
+        orgRolesV2: {},
+        organizations: { 'org-a': buildOrg({ roleV2Migrated: false }) },
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toEqual(['org-a']);
+    });
+
+    it('does not promote non-ADMIN V1 roles', () => {
+      const response = buildResponse({
+        orgFeatures: { 'org-a': [LIBRECHAT_ORG_FEATURE] },
+        orgRoles: { 'org-a': 'DEVELOPER' },
+        orgRolesV2: {},
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toEqual([]);
+    });
+
+    it('V2 takes precedence when orgRolesV2 has an entry for the org, even without manage permission', () => {
+      const response = buildResponse({
+        orgFeatures: { 'org-a': [LIBRECHAT_ORG_FEATURE] },
+        orgRoles: { 'org-a': V1_ADMIN_ROLE },
+        orgRolesV2: {
+          'org-a': [
+            buildRole({ name: 'Viewer', policies: [{ permissions: ['organization:view'] }] }),
+          ],
+        },
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toEqual([]);
+    });
+
+    it('does not promote via V1 when V2 has an explicit DENY for manage permission', () => {
+      const response = buildResponse({
+        orgFeatures: { 'org-a': [LIBRECHAT_ORG_FEATURE] },
+        orgRoles: { 'org-a': V1_ADMIN_ROLE },
+        orgRolesV2: {
+          'org-a': [
+            buildRole({
+              name: 'DeniedAdmin',
+              policies: [{ allowDeny: 'DENY', permissions: [ORG_MANAGE_PERMISSION] }],
+            }),
+          ],
+        },
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toEqual([]);
+    });
+
+    it('blocks V1 fallback when orgRolesV2 has an empty roles array for the org', () => {
+      const response = buildResponse({
+        orgFeatures: { 'org-a': [LIBRECHAT_ORG_FEATURE] },
+        orgRoles: { 'org-a': V1_ADMIN_ROLE },
+        orgRolesV2: { 'org-a': [] },
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toEqual([]);
+    });
+
+    it('suppresses V1 fallback for V2-migrated orgs absent from orgRolesV2', () => {
+      const response = buildResponse({
+        orgFeatures: { 'org-a': [LIBRECHAT_ORG_FEATURE] },
+        orgRoles: { 'org-a': V1_ADMIN_ROLE },
+        orgRolesV2: {},
+        organizations: { 'org-a': buildOrg({ roleV2Migrated: true }) },
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toEqual([]);
+    });
+
+    it('allows V1 fallback for non-V2-migrated orgs', () => {
+      const response = buildResponse({
+        orgFeatures: { 'org-a': [LIBRECHAT_ORG_FEATURE] },
+        orgRoles: { 'org-a': V1_ADMIN_ROLE },
+        orgRolesV2: {},
+        organizations: { 'org-a': buildOrg({ roleV2Migrated: false }) },
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toEqual(['org-a']);
+    });
+
+    it('mixes V2 and V1 across different orgs', () => {
+      const response = buildResponse({
+        orgFeatures: {
+          'org-a': [LIBRECHAT_ORG_FEATURE],
+          'org-b': [LIBRECHAT_ORG_FEATURE],
+          'org-c': [LIBRECHAT_ORG_FEATURE],
+        },
+        orgRoles: { 'org-a': 'DEVELOPER', 'org-b': V1_ADMIN_ROLE, 'org-c': V1_ADMIN_ROLE },
+        orgRolesV2: {
+          'org-a': [
+            buildRole({
+              name: 'Admin',
+              policies: [{ permissions: [ORG_MANAGE_PERMISSION] }],
+            }),
+          ],
+        },
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toHaveLength(3);
+      expect(result.adminOrgIds).toEqual(expect.arrayContaining(['org-a', 'org-b', 'org-c']));
+    });
+
+    it('does not use V1 fallback for ineligible orgs', () => {
+      const response = buildResponse({
+        orgFeatures: { 'org-a': ['FT_OTHER'] },
+        orgRoles: { 'org-a': V1_ADMIN_ROLE },
+        orgRolesV2: {},
+      });
+
+      const result = resolveGUSD(response);
+
+      expect(result.adminOrgIds).toEqual([]);
+    });
   });
 });
