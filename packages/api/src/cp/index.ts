@@ -17,7 +17,6 @@ export type { OrgSwitchResult, OrgSwitchError } from './switch';
 export type { ChcLoginResult, ChcLoginError, ChcLoginInput } from './login';
 export type { RefreshUserMethods } from './refresh';
 export type { StrategyUserMethods, StrategyLookupResult } from './strategy';
-
 export { fetchUserSessionDetails } from './client';
 export {
   resolveGUSD,
@@ -32,5 +31,11 @@ export { provisionTenant } from './provision';
 export { findOrCreateTenantUser, findLastTenantForCpUser, buildTenantUserInput } from './user';
 export { switchOrg, isSwitchError } from './switch';
 export { handleChcLogin, isChcLoginError } from './login';
-export { resolveChcRefreshUser, refreshChcContext, setChcTokenCookie } from './refresh';
+export {
+  resolveChcRefreshUser,
+  refreshChcContext,
+  setChcTokenCookie,
+  registerInlineRefreshHandler,
+} from './refresh';
+export type { InlineRefreshHandler } from './refresh';
 export { resolveChcStrategyUser } from './strategy';

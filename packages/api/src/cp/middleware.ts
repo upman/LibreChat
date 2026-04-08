@@ -1,12 +1,11 @@
 import { tenantStorage, logger } from '@librechat/data-schemas';
 
 import type { Response, NextFunction } from 'express';
-import type { ResolvedCpContext } from './types';
 import type { ServerRequest } from '~/types/http';
 
-import { fetchUserSessionDetails } from './client';
 import { resolveGUSD, LIBRECHAT_ORG_FEATURE } from './resolve';
-import { getCachedGUSD, getOrFetchGUSD } from './cache';
+import { getCachedGUSD } from './cache';
+import { fetchGUSDWithRefresh } from './refresh';
 
 const SESSION_COOKIES = [
   'token',
@@ -63,9 +62,10 @@ export async function requireChcContext(
     return;
   }
 
+  const cpUserId = user.idOnTheSource;
   const tenantId = user.tenantId || user.lastTenantId;
   if (!tenantId) {
-    logger.warn(`[requireChcContext] No tenant resolved for cpUserId=${user.idOnTheSource}`);
+    logger.warn(`[requireChcContext] No tenant resolved for cpUserId=${cpUserId}`);
     invalidateSession(req, res);
     res.status(403).json({
       error: 'No organization resolved for this user',
@@ -74,29 +74,9 @@ export async function requireChcContext(
     return;
   }
 
-  let cpContext = getCachedGUSD(user.idOnTheSource);
-
-  if (!cpContext) {
-    const accessToken = user.federatedTokens?.access_token ?? user.openidTokens?.access_token;
-    if (accessToken) {
-      try {
-        cpContext = await getOrFetchGUSD(user.idOnTheSource, async () => {
-          const gusd = await fetchUserSessionDetails(accessToken);
-          return resolveGUSD(gusd);
-        });
-      } catch (err) {
-        logger.error('[requireChcContext] GUSD call failed — no fallback', {
-          cpUserId: user.idOnTheSource,
-          error: (err as Error).message,
-        });
-        res.status(503).json({
-          error: 'Identity service unavailable',
-          error_code: 'GUSD_UNAVAILABLE',
-        });
-        return;
-      }
-    }
-  }
+  const cpContext =
+    getCachedGUSD(cpUserId) ??
+    (await fetchGUSDWithRefresh(cpUserId, user, req, res, 'requireChcContext'));
 
   if (!cpContext) {
     res.status(503).json({
@@ -110,7 +90,7 @@ export async function requireChcContext(
 
   if (!orgFeatures[tenantId]?.includes(LIBRECHAT_ORG_FEATURE)) {
     logger.warn(
-      `[requireChcContext] Tenant ${tenantId} does not have ${LIBRECHAT_ORG_FEATURE} for cpUserId=${user.idOnTheSource}`,
+      `[requireChcContext] Tenant ${tenantId} does not have ${LIBRECHAT_ORG_FEATURE} for cpUserId=${cpUserId}`,
     );
     invalidateSession(req, res);
     res.status(403).json({
@@ -120,7 +100,7 @@ export async function requireChcContext(
     return;
   }
 
-  req.chcUserId = user.idOnTheSource;
+  req.chcUserId = cpUserId;
   req.tenantId = tenantId;
   req.cpContext = cpContext;
 

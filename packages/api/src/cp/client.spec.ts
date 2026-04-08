@@ -94,7 +94,7 @@ describe('fetchUserSessionDetails', () => {
     fetchSpy.mockRestore();
   });
 
-  it('throws on non-OK response', async () => {
+  it('throws GUSDAuthError on 401 response', async () => {
     process.env.CP_API_BASE_URL = 'https://cp.example.com';
 
     const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
@@ -104,13 +104,34 @@ describe('fetchUserSessionDetails', () => {
     } as Response);
 
     const fetchUserSessionDetails = await loadClient();
+    const { GUSDAuthError } = await import('./client');
 
-    await expect(fetchUserSessionDetails('bad-token')).rejects.toThrow(
-      'GUSD request failed with status 401',
-    );
+    const error = await fetchUserSessionDetails('bad-token').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GUSDAuthError);
+    expect((error as Error).message).toBe('GUSD request failed with status 401');
+    expect((error as Error).name).toBe('GUSDAuthError');
     expect(mockLogger.error).toHaveBeenCalledWith(
       expect.stringContaining('GUSD request failed (401)'),
     );
+
+    fetchSpy.mockRestore();
+  });
+
+  it('throws plain Error on non-401 failure (e.g. 500)', async () => {
+    process.env.CP_API_BASE_URL = 'https://cp.example.com';
+
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'Internal Server Error',
+    } as Response);
+
+    const fetchUserSessionDetails = await loadClient();
+    const { GUSDAuthError } = await import('./client');
+
+    const err = await fetchUserSessionDetails('any-token').catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(GUSDAuthError);
+    expect((err as Error).message).toBe('GUSD request failed with status 500');
 
     fetchSpy.mockRestore();
   });

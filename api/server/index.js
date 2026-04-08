@@ -8,6 +8,7 @@ const express = require('express');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
+const openIdClient = require('openid-client');
 const mongoSanitize = require('express-mongo-sanitize');
 const { logger, runAsSystem, runAsTenant } = require('@librechat/data-schemas');
 const {
@@ -22,13 +23,15 @@ const {
   initializeFileStorage,
   updateInterfacePermissions,
   preAuthTenantMiddleware,
+  registerInlineRefreshHandler,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
 const { getRoleByName, updateAccessPermissions, seedDatabase } = require('~/models');
 const { capabilityContextMiddleware } = require('./middleware/roles/capabilities');
 const createValidateImageRequest = require('./middleware/validateImageRequest');
-const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
+const { jwtLogin, ldapLogin, passportLogin, getOpenIdConfig } = require('~/strategies');
+const { setOpenIDAuthTokens } = require('./services/AuthService');
 const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
@@ -74,6 +77,32 @@ const startServer = async () => {
         'CHC auth uses Auth0 JWT validation via the openidJwt strategy, ' +
         'which is only registered when OPENID_REUSE_TOKENS is enabled.',
     );
+  }
+
+  if (isEnabled(process.env.CHC_INT_ENABLED)) {
+    registerInlineRefreshHandler(async (req, res) => {
+      const refreshToken = req.session?.openidTokens?.refreshToken || req.cookies?.refreshToken;
+      if (!refreshToken) {
+        return null;
+      }
+      try {
+        const openIdConfig = getOpenIdConfig();
+        const refreshParams = process.env.OPENID_SCOPE ? { scope: process.env.OPENID_SCOPE } : {};
+        const tokenset = await openIdClient.refreshTokenGrant(
+          openIdConfig,
+          refreshToken,
+          refreshParams,
+        );
+        if (!tokenset.access_token) {
+          return null;
+        }
+        setOpenIDAuthTokens(tokenset, req, res, req.user?._id?.toString(), refreshToken);
+        return { accessToken: tokenset.access_token };
+      } catch (err) {
+        logger.error('[inlineRefreshHandler] OpenID refresh failed', err);
+        return null;
+      }
+    });
   }
 
   const { DEFAULT_TENANT_ID } = process.env;

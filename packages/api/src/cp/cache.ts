@@ -1,6 +1,7 @@
 import type { ResolvedCpContext } from './types';
 
-const GUSD_TTL_MS = 60_000;
+export const GUSD_TTL_S = 60;
+const GUSD_TTL_MS = GUSD_TTL_S * 1000;
 const GUSD_CACHE_MAX_SIZE = 10_000;
 const gusdCache = new Map<string, { data: ResolvedCpContext; expiresAt: number }>();
 const gusdInflight = new Map<string, Promise<ResolvedCpContext>>();

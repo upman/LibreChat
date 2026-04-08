@@ -1,12 +1,10 @@
 import { tenantStorage, logger } from '@librechat/data-schemas';
 
 import type { Response, NextFunction } from 'express';
-import type { ResolvedCpContext } from './types';
 import type { ServerRequest } from '~/types/http';
 
-import { fetchUserSessionDetails } from './client';
-import { resolveGUSD } from './resolve';
-import { getCachedGUSD, getOrFetchGUSD } from './cache';
+import { getCachedGUSD } from './cache';
+import { fetchGUSDWithRefresh } from './refresh';
 
 /**
  * Lighter CHC middleware for org-recovery endpoints (`/api/cp/orgs`, `/api/cp/switch-org`).
@@ -35,29 +33,10 @@ export async function requireChcIdentity(
     return;
   }
 
-  let cpContext: ResolvedCpContext | undefined = getCachedGUSD(user.idOnTheSource);
-
-  if (!cpContext) {
-    const accessToken = user.federatedTokens?.access_token ?? user.openidTokens?.access_token;
-    if (accessToken) {
-      try {
-        cpContext = await getOrFetchGUSD(user.idOnTheSource, async () => {
-          const gusd = await fetchUserSessionDetails(accessToken);
-          return resolveGUSD(gusd);
-        });
-      } catch (err) {
-        logger.error('[requireChcIdentity] GUSD call failed — no fallback', {
-          cpUserId: user.idOnTheSource,
-          error: (err as Error).message,
-        });
-        res.status(503).json({
-          error: 'Identity service unavailable',
-          error_code: 'GUSD_UNAVAILABLE',
-        });
-        return;
-      }
-    }
-  }
+  const cpUserId = user.idOnTheSource;
+  const cpContext =
+    getCachedGUSD(cpUserId) ??
+    (await fetchGUSDWithRefresh(cpUserId, user, req, res, 'requireChcIdentity'));
 
   if (!cpContext) {
     res.status(503).json({
@@ -67,7 +46,7 @@ export async function requireChcIdentity(
     return;
   }
 
-  req.chcUserId = user.idOnTheSource;
+  req.chcUserId = cpUserId;
   req.cpContext = cpContext;
 
   const tenantId = user.tenantId || user.lastTenantId;

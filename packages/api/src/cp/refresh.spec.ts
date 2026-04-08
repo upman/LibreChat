@@ -14,7 +14,15 @@ jest.mock('./resolve');
 jest.mock('./tenant');
 jest.mock('./cache');
 
-import { resolveChcRefreshUser, refreshChcContext, setChcTokenCookie } from './refresh';
+import {
+  resolveChcRefreshUser,
+  refreshChcContext,
+  setChcTokenCookie,
+  isAccessTokenStale,
+  coalescedInlineRefresh,
+  registerInlineRefreshHandler,
+  _resetRefreshState,
+} from './refresh';
 import { fetchUserSessionDetails } from './client';
 import { resolveGUSD } from './resolve';
 import { resolveTenant } from './tenant';
@@ -133,10 +141,6 @@ describe('resolveChcRefreshUser', () => {
 });
 
 describe('refreshChcContext', () => {
-  const mockFetchUserSessionDetails = fetchUserSessionDetails as jest.MockedFunction<
-    typeof fetchUserSessionDetails
-  >;
-  const mockResolveGUSD = resolveGUSD as jest.MockedFunction<typeof resolveGUSD>;
   const mockResolveTenant = resolveTenant as jest.MockedFunction<typeof resolveTenant>;
   const mockGetCachedGUSD = getCachedGUSD as jest.MockedFunction<typeof getCachedGUSD>;
   const mockGetOrFetchGUSD = getOrFetchGUSD as jest.MockedFunction<typeof getOrFetchGUSD>;
@@ -277,5 +281,122 @@ describe('setChcTokenCookie', () => {
       sameSite: 'strict',
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
+  });
+});
+
+describe('isAccessTokenStale', () => {
+  it('returns true when elapsed time exceeds lifetime minus buffer', () => {
+    const req = {
+      session: {
+        openidTokens: {
+          receivedAt: Date.now() - 3600 * 1000,
+          tokenLifetime: 3600,
+        },
+      },
+    } as unknown as import('~/types/http').ServerRequest;
+
+    expect(isAccessTokenStale(req)).toBe(true);
+  });
+
+  it('returns false when token has significant time remaining', () => {
+    const req = {
+      session: {
+        openidTokens: {
+          receivedAt: Date.now() - 1000 * 1000,
+          tokenLifetime: 3600,
+        },
+      },
+    } as unknown as import('~/types/http').ServerRequest;
+
+    expect(isAccessTokenStale(req)).toBe(false);
+  });
+
+  it('returns false when session data is missing (backward compat)', () => {
+    const req = { session: {} } as unknown as import('~/types/http').ServerRequest;
+    expect(isAccessTokenStale(req)).toBe(false);
+  });
+
+  it('returns false when receivedAt is missing', () => {
+    const req = {
+      session: { openidTokens: { tokenLifetime: 3600 } },
+    } as unknown as import('~/types/http').ServerRequest;
+
+    expect(isAccessTokenStale(req)).toBe(false);
+  });
+
+  it('returns false when tokenLifetime is missing', () => {
+    const req = {
+      session: { openidTokens: { receivedAt: Date.now() - 5000 * 1000 } },
+    } as unknown as import('~/types/http').ServerRequest;
+
+    expect(isAccessTokenStale(req)).toBe(false);
+  });
+});
+
+describe('coalescedInlineRefresh', () => {
+  beforeEach(() => {
+    _resetRefreshState();
+  });
+
+  it('returns null when no handler is registered', async () => {
+    const req = {} as unknown as import('~/types/http').ServerRequest;
+    const res = {} as unknown as import('express').Response;
+
+    const result = await coalescedInlineRefresh('user-1', req, res);
+    expect(result).toBeNull();
+  });
+
+  it('coalesces concurrent calls for the same cpUserId', async () => {
+    const handler = jest.fn().mockResolvedValue({ accessToken: 'new-token' });
+    registerInlineRefreshHandler(handler);
+
+    const req = {} as unknown as import('~/types/http').ServerRequest;
+    const res = {} as unknown as import('express').Response;
+
+    const [r1, r2] = await Promise.all([
+      coalescedInlineRefresh('user-1', req, res),
+      coalescedInlineRefresh('user-1', req, res),
+    ]);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(r1).toBe('new-token');
+    expect(r2).toBe('new-token');
+  });
+
+  it('does not coalesce across different cpUserIds', async () => {
+    const handler = jest.fn().mockResolvedValue({ accessToken: 'new-token' });
+    registerInlineRefreshHandler(handler);
+
+    const req = {} as unknown as import('~/types/http').ServerRequest;
+    const res = {} as unknown as import('express').Response;
+
+    await Promise.all([
+      coalescedInlineRefresh('user-1', req, res),
+      coalescedInlineRefresh('user-2', req, res),
+    ]);
+
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null when handler returns null', async () => {
+    registerInlineRefreshHandler(async () => null);
+
+    const req = {} as unknown as import('~/types/http').ServerRequest;
+    const res = {} as unknown as import('express').Response;
+
+    const result = await coalescedInlineRefresh('user-1', req, res);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when handler throws', async () => {
+    registerInlineRefreshHandler(async () => {
+      throw new Error('refresh failed');
+    });
+
+    const req = {} as unknown as import('~/types/http').ServerRequest;
+    const res = {} as unknown as import('express').Response;
+
+    const result = await coalescedInlineRefresh('user-1', req, res);
+    expect(result).toBeNull();
   });
 });

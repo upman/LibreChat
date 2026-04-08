@@ -6,6 +6,14 @@ import { getMockGUSDResponse } from './mock';
 
 const GUSD_TIMEOUT_MS = Number(process.env.GUSD_TIMEOUT_MS) || 5000;
 
+export class GUSDAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GUSDAuthError';
+    Object.setPrototypeOf(this, GUSDAuthError.prototype);
+  }
+}
+
 export async function fetchUserSessionDetails(accessToken: string): Promise<GUSDResponse> {
   const baseUrl = process.env.CP_API_BASE_URL;
 
@@ -35,6 +43,9 @@ export async function fetchUserSessionDetails(accessToken: string): Promise<GUSD
   if (!response.ok) {
     const text = await response.text();
     logger.error(`[CpClient] GUSD request failed (${response.status}): ${text}`);
+    if (response.status === 401) {
+      throw new GUSDAuthError(`GUSD request failed with status 401`);
+    }
     throw new Error(`GUSD request failed with status ${response.status}`);
   }
 

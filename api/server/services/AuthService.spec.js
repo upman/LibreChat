@@ -41,6 +41,7 @@ const {
   isEmailDomainAllowed,
   resolveAppConfigForUser,
 } = require('@librechat/api');
+const jwt = require('jsonwebtoken');
 const { findUser } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const { setOpenIDAuthTokens, requestPasswordReset } = require('./AuthService');
@@ -271,6 +272,58 @@ describe('setOpenIDAuthTokens', () => {
       const result = setOpenIDAuthTokens(tokenset, req, res, 'user-123', 'existing-refresh');
       expect(result).toBe('the-id-token');
       expect(req.session.openidTokens.refreshToken).toBe('existing-refresh');
+    });
+  });
+
+  describe('computeTokenLifetime (via session tokenLifetime)', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      process.env.OPENID_REUSE_TOKENS = 'true';
+    });
+
+    it('derives tokenLifetime from tokenset.claims() when available', () => {
+      const tokenset = {
+        access_token: 'at',
+        refresh_token: 'rt',
+        id_token: 'it',
+        claims: () => ({ exp: 1000, iat: 400 }),
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens.tokenLifetime).toBe(600);
+      expect(typeof req.session.openidTokens.receivedAt).toBe('number');
+    });
+
+    it('falls back to jwt.decode when claims() is not a function', () => {
+      const idToken = jwt.sign({ exp: 2000, iat: 1500 }, 'secret');
+      const tokenset = {
+        access_token: 'at',
+        refresh_token: 'rt',
+        id_token: idToken,
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens.tokenLifetime).toBe(500);
+    });
+
+    it('sets tokenLifetime to undefined when claims are unavailable', () => {
+      const tokenset = {
+        access_token: 'at',
+        refresh_token: 'rt',
+        id_token: 'not-a-jwt',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens.tokenLifetime).toBeUndefined();
     });
   });
 });

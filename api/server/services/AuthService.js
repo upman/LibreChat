@@ -448,6 +448,24 @@ const setAuthTokens = async (userId, res, _session = null) => {
 };
 
 /**
+ * Derive the token lifetime in seconds from the ID token's `exp` and `iat` claims.
+ * Both claims originate from the provider's clock, so their difference is
+ * clock-skew-resistant. Returns `undefined` if claims are unavailable.
+ */
+function computeTokenLifetime(tokenset) {
+  try {
+    const claims =
+      typeof tokenset.claims === 'function' ? tokenset.claims() : jwt.decode(tokenset.id_token);
+    if (claims?.exp && claims?.iat) {
+      return claims.exp - claims.iat;
+    }
+  } catch {
+    /* ignore — staleness check falls back to reactive 401 handling */
+  }
+  return undefined;
+}
+
+/**
  * @function setOpenIDAuthTokens
  * Set OpenID Authentication Tokens
  * Stores tokens server-side in express-session to avoid large cookie sizes
@@ -519,6 +537,8 @@ const setOpenIDAuthTokens = (tokenset, req, res, userId, existingRefreshToken) =
         idToken: tokenset.id_token,
         refreshToken: refreshToken,
         expiresAt: expirationDate.getTime(),
+        receivedAt: Date.now(),
+        tokenLifetime: computeTokenLifetime(tokenset),
       };
     } else {
       logger.warn('[setOpenIDAuthTokens] No session available, falling back to cookies');

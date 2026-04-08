@@ -31,6 +31,10 @@ export type ServerRequest = Request<unknown, unknown, RequestBody> & {
       accessToken?: string;
       refreshToken?: string;
       idToken?: string;
+      /** Timestamp (ms) when our server received the token — used with tokenLifetime for clock-skew-resistant staleness check */
+      receivedAt?: number;
+      /** Token lifetime in seconds derived from provider claims (exp - iat) — same clock, skew cancels */
+      tokenLifetime?: number;
     };
   };
 };
