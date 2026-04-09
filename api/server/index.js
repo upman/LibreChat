@@ -24,6 +24,7 @@ const {
   updateInterfacePermissions,
   preAuthTenantMiddleware,
   registerInlineRefreshHandler,
+  createMetrics,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -40,44 +41,6 @@ const staticCache = require('./utils/staticCache');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const noIndex = require('./middleware/noIndex');
 const routes = require('./routes');
-const { register, collectDefaultMetrics, Counter, Histogram } = require('prom-client');
-
-collectDefaultMetrics();
-
-const httpRequests = new Counter({
-  name: 'http_requests_total',
-  help: 'Total HTTP requests',
-  labelNames: ['method', 'path', 'status'],
-});
-
-const httpDuration = new Histogram({
-  name: 'http_request_duration_seconds',
-  help: 'HTTP request latency in seconds',
-  labelNames: ['method', 'path', 'status'],
-  buckets: [0.05, 0.1, 0.3, 0.5, 1, 2, 5],
-});
-
-const PATH_NORMALIZATIONS = [
-  [/\/api\/messages\/[^/]+/, '/api/messages/#id'],
-  [/\/api\/convos\/[^/]+/, '/api/convos/#id'],
-  [/\/api\/files\/[^/]+/, '/api/files/#id'],
-  [/\/api\/agents\/[^/]+/, '/api/agents/#id'],
-  [/\/api\/assistants\/[^/]+/, '/api/assistants/#id'],
-  [/\/api\/share\/[^/]+/, '/api/share/#token'],
-];
-
-const normalizePath = (path) =>
-  PATH_NORMALIZATIONS.reduce((p, [pattern, replacement]) => p.replace(pattern, replacement), path);
-
-const metricsMiddleware = (req, res, next) => {
-  const end = httpDuration.startTimer();
-  res.on('finish', () => {
-    const labels = { method: req.method, path: normalizePath(req.path), status: res.statusCode };
-    httpRequests.inc(labels);
-    end(labels);
-  });
-  next();
-};
 
 const { PORT, HOST, ALLOW_SOCIAL_LOGIN, DISABLE_COMPRESSION, TRUST_PROXY } = process.env ?? {};
 
@@ -89,6 +52,11 @@ const trusted_proxy = Number(TRUST_PROXY) || 1; /* trust first proxy by default 
 const app = express();
 
 const startServer = async () => {
+  const { metricsMiddleware, metricsRouter } = createMetrics();
+  if (!process.env.METRICS_SECRET) {
+    logger.warn('[metrics] METRICS_SECRET is not set — /metrics will return 401 for all requests');
+  }
+
   if (typeof Bun !== 'undefined') {
     axios.defaults.headers.common['Accept-Encoding'] = 'gzip';
   }
@@ -185,6 +153,7 @@ const startServer = async () => {
   app.get('/health', (_req, res) => res.status(200).send('OK'));
 
   /* Middleware */
+  app.use(metricsMiddleware);
   app.use(noIndex);
   app.use(express.json({ limit: '3mb' }));
   app.use(express.urlencoded({ extended: true, limit: '3mb' }));
@@ -238,8 +207,6 @@ const startServer = async () => {
   /* Per-request capability cache — must be registered before any route that calls hasCapability */
   app.use(capabilityContextMiddleware);
 
-  app.use(metricsMiddleware);
-
   /* Pre-auth tenant context for unauthenticated routes that need tenant scoping.
    * The reverse proxy / auth gateway sets `X-Tenant-Id` header for multi-tenant deployments. */
   app.use('/oauth', preAuthTenantMiddleware, routes.oauth);
@@ -279,10 +246,7 @@ const startServer = async () => {
   app.use('/api/mcp', routes.mcp);
   app.use('/api/cp', routes.cp);
 
-  app.get('/metrics', async (_req, res) => {
-    res.set('Content-Type', register.contentType);
-    res.end(await register.metrics());
-  });
+  app.use('/metrics', metricsRouter);
 
   /** 404 for unmatched API routes */
   app.use('/api', apiNotFound);
