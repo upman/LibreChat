@@ -1,4 +1,7 @@
+import { timingSafeEqual } from 'crypto';
+import { Router } from 'express';
 import { Registry, collectDefaultMetrics, Counter, Histogram } from 'prom-client';
+import { logger } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction } from 'express';
 
 const PATH_NORMALIZATIONS: [RegExp, string][] = [
@@ -9,7 +12,7 @@ const PATH_NORMALIZATIONS: [RegExp, string][] = [
   [/\/api\/assistants\/[^/]+/, '/api/assistants/#id'],
   [/\/api\/share\/[^/]+/, '/api/share/#token'],
   /** Catch-all: MongoDB ObjectId (24 hex chars) */
-  [/\/[0-9a-f]{24}(?=\/|$)/g, '/#id'],
+  [/\/[0-9a-f]{24}(?=\/|$)/gi, '/#id'],
   /** Catch-all: UUID v4 */
   [/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\/|$)/gi, '/#id'],
 ];
@@ -17,12 +20,12 @@ const PATH_NORMALIZATIONS: [RegExp, string][] = [
 export const normalizePath = (rawPath: string): string =>
   PATH_NORMALIZATIONS.reduce((p, [pattern, replacement]) => p.replace(pattern, replacement), rawPath);
 
-export interface Metrics {
-  registry: Registry;
+export interface PrometheusMetrics {
   metricsMiddleware: (req: Request, res: Response, next: NextFunction) => void;
+  metricsRouter: Router;
 }
 
-export function createMetrics(): Metrics {
+export function createMetrics(): PrometheusMetrics {
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
 
@@ -51,5 +54,30 @@ export function createMetrics(): Metrics {
     next();
   };
 
-  return { registry, metricsMiddleware };
+  const metricsRouter = Router();
+  metricsRouter.get('/', async (req: Request, res: Response) => {
+    const secret = process.env.METRICS_SECRET;
+    const auth = req.headers['authorization'];
+    if (!secret || !auth) {
+      res.status(401).end();
+      return;
+    }
+    const token = auth.replace(/^bearer\s+/i, '');
+    const encode = (s: string) => new TextEncoder().encode(s);
+    const expected = encode(secret);
+    const actual = encode(token);
+    if (expected.byteLength !== actual.byteLength || !timingSafeEqual(expected, actual)) {
+      res.status(401).end();
+      return;
+    }
+    try {
+      res.set('Content-Type', registry.contentType);
+      res.end(await registry.metrics());
+    } catch (err) {
+      logger.error('[metrics] Failed to collect metrics:', err);
+      res.status(500).end();
+    }
+  });
+
+  return { metricsMiddleware, metricsRouter };
 }

@@ -52,7 +52,10 @@ const trusted_proxy = Number(TRUST_PROXY) || 1; /* trust first proxy by default 
 const app = express();
 
 const startServer = async () => {
-  const { registry, metricsMiddleware } = createMetrics();
+  const { metricsMiddleware, metricsRouter } = createMetrics();
+  if (!process.env.METRICS_SECRET) {
+    logger.warn('[metrics] METRICS_SECRET is not set — /metrics will return 401 for all requests');
+  }
 
   if (typeof Bun !== 'undefined') {
     axios.defaults.headers.common['Accept-Encoding'] = 'gzip';
@@ -243,21 +246,7 @@ const startServer = async () => {
   app.use('/api/mcp', routes.mcp);
   app.use('/api/cp', routes.cp);
 
-  app.get('/metrics', async (req, res) => {
-    const secret = process.env.METRICS_SECRET;
-    const auth = req.headers['authorization'];
-    if (!secret || !auth || auth !== `Bearer ${secret}`) {
-      res.status(401).end();
-      return;
-    }
-    try {
-      res.set('Content-Type', registry.contentType);
-      res.end(await registry.metrics());
-    } catch (err) {
-      logger.error('[metrics] Failed to collect metrics:', err);
-      res.status(500).end();
-    }
-  });
+  app.use('/metrics', metricsRouter);
 
   /** 404 for unmatched API routes */
   app.use('/api', apiNotFound);

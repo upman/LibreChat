@@ -1,3 +1,4 @@
+/// <reference types="jest" />
 import { normalizePath } from './metrics';
 
 describe('normalizePath', () => {
@@ -9,8 +10,9 @@ describe('normalizePath', () => {
     ['/api/agents/507f1f77bcf86cd799439011', '/api/agents/#id'],
     ['/api/assistants/507f1f77bcf86cd799439011', '/api/assistants/#id'],
     ['/api/share/some-token-value', '/api/share/#token'],
-    // Catch-all: ObjectId in unknown routes
+    // Catch-all: ObjectId in unknown routes (lower and upper case)
     ['/api/tags/507f1f77bcf86cd799439011', '/api/tags/#id'],
+    ['/api/tags/507F1F77BCF86CD799439011', '/api/tags/#id'],
     ['/api/tools/507f1f77bcf86cd799439011', '/api/tools/#id'],
     ['/api/runs/507f1f77bcf86cd799439011', '/api/runs/#id'],
     // Catch-all: UUID in unknown routes
@@ -24,7 +26,7 @@ describe('normalizePath', () => {
     ['/health', '/health'],
     ['/metrics', '/metrics'],
     ['/', '/'],
-  ])('normalizes %s → %s', (input, expected) => {
-    expect(normalizePath(input)).toBe(expected);
+  ])('normalizes %s → %s', (input: string, normalized: string) => {
+    expect(normalizePath(input)).toBe(normalized);
   });
 });
