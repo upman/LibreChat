@@ -86,6 +86,14 @@ describe('Server Configuration', () => {
     await mongoose.disconnect();
   });
 
+  it('should expose Prometheus metrics at /metrics', async () => {
+    const response = await request(app).get('/metrics');
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/text\/plain/);
+    expect(response.text).toMatch(/^# HELP /m);
+    expect(response.text).toMatch(/^# TYPE /m);
+  });
+
   it('should return OK for /health', async () => {
     const response = await request(app).get('/health');
     expect(response.status).toBe(200);
