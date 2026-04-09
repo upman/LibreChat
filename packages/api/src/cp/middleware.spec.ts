@@ -55,6 +55,7 @@ function buildCachedContext(overrides: Partial<ResolvedCpContext> = {}): Resolve
     },
     eligibleOrgIds: ['org-a'],
     adminOrgIds: [],
+    instances: {},
     resolvedAt: Date.now(),
     ...overrides,
   };

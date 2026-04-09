@@ -56,6 +56,7 @@ export function resolveGUSD(response: GUSDResponse): ResolvedCpContext {
     },
     eligibleOrgIds,
     adminOrgIds,
+    instances: response.instances,
     resolvedAt: Date.now(),
   };
 }

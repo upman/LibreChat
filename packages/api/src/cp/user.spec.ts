@@ -228,6 +228,7 @@ describe('buildTenantUserInput', () => {
           'tenant-2': [],
         },
       },
+      instances: {},
       ...overrides,
     };
   }

@@ -1,6 +1,7 @@
-import type { GUSDResponse } from './types';
+import type { GUSDResponse, CpInstanceSummary } from './types';
 
 const MOCK_ORG_ID = 'mock-org-id';
+const MOCK_SERVICE_ID = 'mock-service-01';
 
 export function getMockGUSDResponse(): GUSDResponse {
   return {
@@ -44,7 +45,24 @@ export function getMockGUSDResponse(): GUSDResponse {
         roleV2Migrated: true,
       },
     },
-    instances: {},
+    instances: {
+      [MOCK_SERVICE_ID]: {
+        id: MOCK_SERVICE_ID,
+        name: 'Local Dev Service',
+        organizationId: MOCK_ORG_ID,
+        regionId: 'us-east-1',
+        state: 'running',
+        instanceTier: 'Development',
+        clickhouseVersion: '24.6',
+        endpoints: {
+          https: { hostname: 'localhost', port: 8443 },
+          nativesecure: { hostname: 'localhost', port: 9440 },
+        },
+        database: 'default',
+        isPrimary: true,
+        dataWarehouseId: 'mock-dw-01',
+      } satisfies CpInstanceSummary,
+    },
     roleMappings: [],
     pendingActions: [],
     dashboardRolesV2: [],

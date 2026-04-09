@@ -13,9 +13,41 @@ export type {
 
 /* ── Opaque forward-compat types (not consumed yet) ───────────────── */
 
-export type CpInstanceSummary = unknown;
 export type CpRoleMapping = unknown;
 export type CpPendingUserAction = unknown;
+
+/* ── Instance / service summary from GUSD ─────────────────────────── */
+
+export interface CpInstanceEndpoint {
+  hostname: string;
+  port: number;
+}
+
+export interface CpInstanceEndpoints {
+  https: CpInstanceEndpoint;
+  nativesecure: CpInstanceEndpoint;
+  mysql?: CpInstanceEndpoint;
+}
+
+/**
+ * Subset of CP `InstanceSummary` returned by `getUserSessionDetails`.
+ * Mirrors `instanceSummaryFields` in `cp-common/src/protocol/Account.ts`.
+ */
+export interface CpInstanceSummary {
+  id: string;
+  name: string;
+  organizationId: string;
+  regionId: string;
+  state: string;
+  instanceTier: string;
+  clickhouseVersion: string;
+  endpoints: CpInstanceEndpoints;
+  database: string;
+  isPrimary: boolean;
+  dataWarehouseId: string;
+  mcpEnabled?: boolean;
+  isClickstackInstance?: boolean;
+}
 
 /**
  * Matches the full `GetUserSessionDetailsResponse` from
@@ -45,6 +77,7 @@ export interface ResolvedCpContext {
   chcSessionDetails: ChcSessionDetails;
   eligibleOrgIds: string[];
   adminOrgIds: string[];
+  instances: Record<string, CpInstanceSummary>;
   resolvedAt: number;
 }
 

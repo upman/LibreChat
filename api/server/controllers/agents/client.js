@@ -18,6 +18,7 @@ const {
   memoryInstructions,
   createTokenCounter,
   applyContextToAgent,
+  formatServicesContext,
   recordCollectedUsage,
   GenerationJobManager,
   getTransactionsConfig,
@@ -344,6 +345,15 @@ class AgentClient extends BaseClient {
     if (withoutKeys) {
       const memoryContext = `${memoryInstructions}\n\n# Existing memory about the user:\n${withoutKeys}`;
       sharedRunContextParts.push(memoryContext);
+    }
+
+    const cpContext = this.options.req.cpContext;
+    const tenantId = this.options.req.tenantId;
+    if (cpContext?.instances && tenantId) {
+      const servicesContext = formatServicesContext(cpContext.instances, tenantId);
+      if (servicesContext) {
+        sharedRunContextParts.push(servicesContext);
+      }
     }
 
     const sharedRunContext = sharedRunContextParts.join('\n\n');

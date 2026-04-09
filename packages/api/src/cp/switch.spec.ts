@@ -83,6 +83,7 @@ function buildCpContext(overrides: Partial<ResolvedCpContext> = {}): ResolvedCpC
         'org-target': [],
       },
     } as ChcSessionDetails,
+    instances: {},
     ...overrides,
   };
 }

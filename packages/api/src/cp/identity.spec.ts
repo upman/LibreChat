@@ -62,6 +62,7 @@ function buildCpContext(overrides: Partial<ResolvedCpContext> = {}): ResolvedCpC
     },
     eligibleOrgIds: ['org-a'],
     adminOrgIds: [],
+    instances: {},
     resolvedAt: Date.now(),
     ...overrides,
   };

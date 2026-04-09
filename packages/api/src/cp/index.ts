@@ -39,3 +39,4 @@ export {
 } from './refresh';
 export type { InlineRefreshHandler } from './refresh';
 export { resolveChcStrategyUser } from './strategy';
+export { formatServicesContext } from './services';
