@@ -132,6 +132,7 @@ class CustomOpenIDStrategy extends OpenIDStrategy {
     const prompt = req.query?.prompt;
     if (typeof prompt === 'string' && ALLOWED_PROMPTS.has(prompt)) {
       params.set('prompt', prompt);
+      logger.debug(`[openidStrategy] Setting prompt=${prompt} on authorization request`);
     }
 
     /** Generate nonce for federated providers that require it */
@@ -144,6 +145,25 @@ class CustomOpenIDStrategy extends OpenIDStrategy {
     }
 
     return params;
+  }
+
+  /**
+   * The base strategy treats ANY request with query params as an authorization callback.
+   * This breaks when custom params like `prompt=login` are on the initial auth URL.
+   * Override to check for actual OIDC callback params (`code` / `error`) instead.
+   */
+  authenticate(req, options) {
+    if (!req.session) {
+      return this.error(new Error('OAuth 2.0 authentication requires session support.'));
+    }
+    const currentUrl = this.currentUrl(req);
+    const hasCallbackParams =
+      currentUrl.searchParams.has('code') || currentUrl.searchParams.has('error');
+    if (hasCallbackParams) {
+      OpenIDStrategy.prototype.authorizationCodeGrant.call(this, req, currentUrl, options);
+    } else {
+      OpenIDStrategy.prototype.authorizationRequest.call(this, req, options);
+    }
   }
 }
 

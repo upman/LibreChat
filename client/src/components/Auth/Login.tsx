@@ -106,8 +106,16 @@ function Login() {
     if (!pendingMfaRedirect) {
       return;
     }
+    const MFA_KEY = 'mfa_redirect_attempted';
+    if (sessionStorage.getItem(MFA_KEY)) {
+      sessionStorage.removeItem(MFA_KEY);
+      setPendingMfaRedirect(false);
+      showToast({ message: localize('com_auth_error_oauth_failed'), status: 'error' });
+      return;
+    }
     if (startupConfig?.serverDomain) {
-      window.location.href = `${startupConfig.serverDomain}/oauth/openid?prompt=login`;
+      sessionStorage.setItem(MFA_KEY, '1');
+      window.location.href = `${startupConfig.serverDomain}/oauth/openid`;
       return;
     }
     const timeout = setTimeout(() => {

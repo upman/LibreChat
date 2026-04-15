@@ -92,6 +92,16 @@ router.get(
  * OpenID Routes
  */
 router.get('/openid', (req, res, next) => {
+  const MFA_COOKIE = 'mfa_redirect_attempted';
+  if (req.query?.prompt === 'login') {
+    if (req.cookies?.[MFA_COOKIE]) {
+      logger.warn(
+        '[oauth/openid] MFA re-auth did not resolve mfa_required; breaking redirect loop',
+      );
+      return res.redirect(`${domains.client}/login?redirect=false&error=${ErrorTypes.AUTH_FAILED}`);
+    }
+    res.cookie(MFA_COOKIE, '1', { maxAge: 300000, httpOnly: true, sameSite: 'lax' });
+  }
   return passport.authenticate('openid', {
     session: false,
     state: randomState(),
@@ -105,6 +115,10 @@ router.get(
     failureMessage: true,
     session: false,
   }),
+  (req, res, next) => {
+    res.clearCookie('mfa_redirect_attempted');
+    next();
+  },
   setBalanceConfig,
   checkDomainAllowed,
   oauthHandler,

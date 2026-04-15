@@ -27,6 +27,7 @@ const {
 } = require('~/models');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const { getOpenIdConfig, getOpenIdEmail } = require('~/strategies');
+const jwtDecode = require('jsonwebtoken/decode');
 
 const registrationController = async (req, res) => {
   try {
@@ -82,6 +83,70 @@ const refreshController = async (req, res) => {
 
     if (!refreshToken) {
       return res.status(200).send('Refresh token not provided');
+    }
+
+    /**
+     * When the IdP requires MFA with allowRememberBrowser: false, refreshTokenGrant
+     * always fails with mfa_required (server-to-server call has no browser MFA state).
+     * The OAuth callback already stored valid tokens in the session — reuse them when
+     * they haven't expired instead of hitting the token endpoint.
+     */
+    const sessionTokens = req.session?.openidTokens;
+    const tokenAgeSec =
+      sessionTokens?.receivedAt && sessionTokens?.tokenLifetime
+        ? (Date.now() - sessionTokens.receivedAt) / 1000
+        : Infinity;
+    const SESSION_REUSE_BUFFER_SEC = 30;
+
+    if (
+      sessionTokens?.idToken &&
+      tokenAgeSec < sessionTokens.tokenLifetime - SESSION_REUSE_BUFFER_SEC
+    ) {
+      try {
+        const claims = jwtDecode(sessionTokens.idToken);
+        if (claims?.sub) {
+          let user;
+          if (isEnabled(process.env.CHC_INT_ENABLED)) {
+            user = await resolveChcRefreshUser(parsedCookies.token, process.env.JWT_SECRET, {
+              getUserById,
+              updateUser,
+            });
+          } else {
+            const result = await findOpenIDUser({
+              findUser,
+              email: getOpenIdEmail(claims),
+              openidId: claims.sub,
+              idOnTheSource: claims.oid,
+              strategyName: 'refreshController',
+            });
+            if (!result.error && result.user) {
+              user = result.user;
+            }
+          }
+
+          if (user) {
+            logger.debug(
+              '[refreshController] Reusing valid session tokens (skipping refreshTokenGrant)',
+            );
+            const appAuthToken = sessionTokens.idToken || sessionTokens.accessToken;
+            const {
+              password: _pw,
+              __v: _v,
+              totpSecret: _ts,
+              backupCodes: _bc,
+              idOnTheSource: _idos,
+              resolvedAt: _ra,
+              lastTenantId: _lt,
+              ...safeUser
+            } = user;
+            return res.status(200).send({ token: appAuthToken, user: safeUser });
+          }
+        }
+      } catch (_sessionErr) {
+        logger.warn(
+          '[refreshController] Session token reuse failed, proceeding with token refresh',
+        );
+      }
     }
 
     try {

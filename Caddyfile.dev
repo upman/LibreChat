@@ -1,0 +1,5 @@
+ai.us-east-2.aws.clickhouse-dev.com {
+	tls internal
+
+	reverse_proxy localhost:3080
+}
