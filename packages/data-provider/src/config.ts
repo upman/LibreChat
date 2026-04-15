@@ -1723,6 +1723,10 @@ export enum ErrorTypes {
    */
   TENANT_NOT_ELIGIBLE = 'tenant_not_eligible',
   /**
+   * OpenID provider requires multi-factor authentication
+   */
+  MFA_REQUIRED = 'mfa_required',
+  /**
    * Model refused to respond (content policy violation)
    */
   REFUSAL = 'refusal',

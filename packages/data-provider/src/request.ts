@@ -2,9 +2,10 @@
 import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 import { setTokenHeader } from './headers-helpers';
 import * as endpoints from './api-endpoints';
+import { ErrorTypes } from './config';
 import type * as t from './types';
 
-let _isRedirectingForTenantError = false;
+let _isRedirectingForAuthError = false;
 
 async function _get<T>(url: string, options?: AxiosRequestConfig): Promise<T> {
   const response = await axios.get(url, { ...options });
@@ -101,6 +102,29 @@ if (typeof window !== 'undefined') {
         return Promise.reject(error);
       }
 
+      if (error.response.status === 403 && !_isRedirectingForAuthError) {
+        const errorCode = error.response.data?.error_code;
+        const base = endpoints.apiBaseUrl();
+        if (errorCode === 'TENANT_NOT_ELIGIBLE') {
+          _isRedirectingForAuthError = true;
+          window.location.href =
+            base +
+            '/login?redirect=false&error=tenant_not_eligible&error_description=' +
+            encodeURIComponent(
+              error.response.data?.error ||
+                'LibreChat is not enabled for the current organization',
+            );
+          return new Promise(() => {});
+        }
+        if (errorCode === ErrorTypes.MFA_REQUIRED) {
+          _isRedirectingForAuthError = true;
+          const loginUrl = endpoints.buildLoginRedirectUrl({ disableAutoRedirect: true });
+          const sep = loginUrl.includes('?') ? '&' : '?';
+          window.location.href = `${base}${loginUrl}${sep}error=${ErrorTypes.MFA_REQUIRED}`;
+          return new Promise(() => {});
+        }
+      }
+
       /** Skip refresh when the Authorization header has been cleared (e.g. during logout),
        *  but allow shared link requests to proceed so auth recovery/redirect can happen */
       if (
@@ -108,20 +132,6 @@ if (typeof window !== 'undefined') {
         !window.location.pathname.startsWith('/share/')
       ) {
         return Promise.reject(error);
-      }
-
-      if (
-        error.response.status === 403 &&
-        error.response.data?.error_code === 'TENANT_NOT_ELIGIBLE' &&
-        !_isRedirectingForTenantError
-      ) {
-        _isRedirectingForTenantError = true;
-        window.location.href =
-          '/login?error=tenant_not_eligible&error_description=' +
-          encodeURIComponent(
-            error.response.data?.error || 'LibreChat is not enabled for the current organization',
-          );
-        return new Promise(() => {});
       }
 
       if (error.response.status === 401 && !originalRequest._retry) {
@@ -144,7 +154,7 @@ if (typeof window !== 'undefined') {
 
         try {
           const response = await refreshToken(
-            // Handle edge case where we get a blank screen if the initial 401 error is from a refresh token request
+            // Retry flag prevents blank screen when a refresh-on-refresh 401 occurs
             originalRequest.url?.includes('api/auth/refresh') === true ? true : false,
           );
 

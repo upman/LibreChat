@@ -214,6 +214,7 @@ describe('refreshController – OpenID path', () => {
     res = {
       status: jest.fn().mockReturnThis(),
       send: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
       redirect: jest.fn(),
     };
   });
@@ -399,6 +400,45 @@ describe('refreshController – OpenID path', () => {
 
       const sentPayload = res.send.mock.calls[0][0];
       expect(sentPayload.user.role).toBe('ADMIN');
+    });
+  });
+
+  describe('MFA required error handling', () => {
+    it('returns 403 with error_code mfa_required when error.cause.error is mfa_required', async () => {
+      const mfaError = new Error('token refresh failed');
+      mfaError.cause = {
+        error: 'mfa_required',
+        error_description: 'Multifactor authentication required',
+      };
+      openIdClient.refreshTokenGrant.mockRejectedValue(mfaError);
+
+      await refreshController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith({ error_code: 'mfa_required' });
+      expect(res.send).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 with error_code mfa_required when error.error is mfa_required', async () => {
+      const mfaError = new Error('token refresh failed');
+      mfaError.error = 'mfa_required';
+      openIdClient.refreshTokenGrant.mockRejectedValue(mfaError);
+
+      await refreshController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith({ error_code: 'mfa_required' });
+      expect(res.send).not.toHaveBeenCalled();
+    });
+
+    it('returns generic 403 string for non-MFA refresh errors', async () => {
+      openIdClient.refreshTokenGrant.mockRejectedValue(new Error('invalid_grant'));
+
+      await refreshController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.send).toHaveBeenCalledWith('Invalid OpenID refresh token');
+      expect(res.json).not.toHaveBeenCalled();
     });
   });
 });

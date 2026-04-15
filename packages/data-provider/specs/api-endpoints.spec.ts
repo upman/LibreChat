@@ -71,4 +71,69 @@ describe('buildLoginRedirectUrl', () => {
     expect(result).toContain('redirect_to=');
     expect(decodeURIComponent(result.split('redirect_to=')[1])).toBe('/c/loginhistory');
   });
+
+  describe('disableAutoRedirect option', () => {
+    it('appends redirect=false when disableAutoRedirect is true', () => {
+      window.history.replaceState({}, '', '/c/abc123');
+      const result = buildLoginRedirectUrl({ disableAutoRedirect: true });
+      expect(result).toContain('redirect=false');
+      expect(result).toContain('redirect_to=');
+    });
+
+    it('does not append redirect=false when disableAutoRedirect is false', () => {
+      window.history.replaceState({}, '', '/c/abc123');
+      const result = buildLoginRedirectUrl({ disableAutoRedirect: false });
+      expect(result).not.toContain('redirect=false');
+    });
+
+    it('returns /login?redirect=false on login path with disableAutoRedirect', () => {
+      const result = buildLoginRedirectUrl({ pathname: '/login', disableAutoRedirect: true });
+      expect(result).toBe('/login?redirect=false');
+    });
+
+    it('returns /login?redirect=false on root path with disableAutoRedirect', () => {
+      window.history.replaceState({}, '', '/');
+      const result = buildLoginRedirectUrl({ disableAutoRedirect: true });
+      expect(result).toBe('/login?redirect=false');
+    });
+
+    it('preserves redirect_to alongside redirect=false', () => {
+      const result = buildLoginRedirectUrl({
+        pathname: '/c/deep',
+        search: '?q=hello',
+        hash: '',
+        disableAutoRedirect: true,
+      });
+      expect(result).toContain('redirect_to=');
+      expect(result).toContain('redirect=false');
+      const url = new URL(result, 'http://localhost');
+      expect(url.searchParams.get('redirect')).toBe('false');
+      expect(decodeURIComponent(url.searchParams.get('redirect_to') ?? '')).toBe(
+        '/c/deep?q=hello',
+      );
+    });
+
+    it('uses encodeURIComponent encoding (spaces as %20, not +)', () => {
+      const result = buildLoginRedirectUrl({
+        pathname: '/c/my conversation',
+        search: '',
+        hash: '',
+      });
+      expect(result).toContain('%20');
+      expect(result).not.toContain('+');
+    });
+
+    it('old positional args still work alongside options overload', () => {
+      const positional = buildLoginRedirectUrl('/c/new', '?q=hello', '');
+      const options = buildLoginRedirectUrl({ pathname: '/c/new', search: '?q=hello', hash: '' });
+      expect(positional).toBe(options);
+    });
+
+    it('preserves search and hash when pathname is undefined (positional form)', () => {
+      const result = buildLoginRedirectUrl(undefined, '?q=hello', '#section');
+      expect(result).toContain('redirect_to=');
+      const encoded = result.split('redirect_to=')[1];
+      expect(decodeURIComponent(encoded)).toContain('?q=hello#section');
+    });
+  });
 });

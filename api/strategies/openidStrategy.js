@@ -100,6 +100,8 @@ This violates RFC 7235 and may cause issues with strict OAuth clients. Removing 
 /** @typedef {Configuration | null}  */
 let openidConfig = null;
 
+const ALLOWED_PROMPTS = new Set(['login', 'consent', 'select_account']);
+
 /**
  * Custom OpenID Strategy
  *
@@ -125,6 +127,11 @@ class CustomOpenIDStrategy extends OpenIDStrategy {
       logger.debug(
         `[openidStrategy] Adding audience to authorization request: ${process.env.OPENID_AUDIENCE}`,
       );
+    }
+
+    const prompt = req.query?.prompt;
+    if (typeof prompt === 'string' && ALLOWED_PROMPTS.has(prompt)) {
+      params.set('prompt', prompt);
     }
 
     /** Generate nonce for federated providers that require it */

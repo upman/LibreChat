@@ -177,6 +177,11 @@ const refreshController = async (req, res) => {
       return res.status(200).send({ token, user: safeUser });
     } catch (error) {
       logger.error('[refreshController] OpenID token refresh error', error);
+      const isMfaRequired =
+        error?.cause?.error === 'mfa_required' || error?.error === 'mfa_required';
+      if (isMfaRequired) {
+        return res.status(403).json({ error_code: 'mfa_required' });
+      }
       return res.status(403).send('Invalid OpenID refresh token');
     }
   }

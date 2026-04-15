@@ -167,17 +167,35 @@ export const registerPage = () => `${BASE_URL}/register`;
 const REDIRECT_PARAM = 'redirect_to';
 const LOGIN_PATH_RE = /(?:^|\/)login(?:\/|$)/;
 
+interface LoginRedirectOptions {
+  pathname?: string;
+  search?: string;
+  hash?: string;
+  /** Appends `redirect=false` to suppress OpenID auto-redirect on the login page. */
+  disableAutoRedirect?: boolean;
+}
+
 /**
  * Builds a `/login?redirect_to=...` URL from the given or current location.
  * Returns plain `/login` (no param) when already on a login route to prevent recursive nesting.
  */
-export function buildLoginRedirectUrl(pathname?: string, search?: string, hash?: string): string {
-  const p = pathname ?? window.location.pathname;
+export function buildLoginRedirectUrl(pathname?: string, search?: string, hash?: string): string;
+export function buildLoginRedirectUrl(options?: LoginRedirectOptions): string;
+export function buildLoginRedirectUrl(
+  pathnameOrOptions?: string | LoginRedirectOptions,
+  search?: string,
+  hash?: string,
+): string {
+  const opts =
+    typeof pathnameOrOptions === 'string' || pathnameOrOptions === undefined
+      ? { pathname: pathnameOrOptions, search, hash }
+      : pathnameOrOptions;
+  const p = opts.pathname ?? window.location.pathname;
   if (LOGIN_PATH_RE.test(p)) {
-    return '/login';
+    return opts.disableAutoRedirect ? '/login?redirect=false' : '/login';
   }
-  const s = search ?? window.location.search;
-  const h = hash ?? window.location.hash;
+  const s = opts.search ?? window.location.search;
+  const h = opts.hash ?? window.location.hash;
 
   const stripped =
     BASE_URL && (p === BASE_URL || p.startsWith(BASE_URL + '/'))
@@ -185,9 +203,11 @@ export function buildLoginRedirectUrl(pathname?: string, search?: string, hash?:
       : p;
   const currentPath = `${stripped}${s}${h}`;
   if (!currentPath || currentPath === '/') {
-    return '/login';
+    return opts.disableAutoRedirect ? '/login?redirect=false' : '/login';
   }
-  return `/login?${REDIRECT_PARAM}=${encodeURIComponent(currentPath)}`;
+  const redirectPart = `${REDIRECT_PARAM}=${encodeURIComponent(currentPath)}`;
+  const noAutoRedirect = opts.disableAutoRedirect ? '&redirect=false' : '';
+  return `/login?${redirectPart}${noAutoRedirect}`;
 }
 
 export const resendVerificationEmail = () => `${BASE_URL}/api/user/verify/resend`;

@@ -32,6 +32,9 @@ function Login() {
   const initialOauthError = searchParams.get('error');
   const hasChcError = !!initialOauthError && CHC_ERROR_CODES.has(initialOauthError as ErrorTypes);
 
+  const [pendingMfaRedirect, setPendingMfaRedirect] = useState(
+    initialOauthError === ErrorTypes.MFA_REQUIRED,
+  );
   const [isAutoRedirectDisabled, setIsAutoRedirectDisabled] = useState(
     disableAutoRedirect || hasChcError,
   );
@@ -79,6 +82,15 @@ function Login() {
       return;
     }
 
+    if (oauthError === ErrorTypes.MFA_REQUIRED) {
+      setPendingMfaRedirect(true);
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete('error');
+      newParams.delete('redirect');
+      setSearchParams(newParams, { replace: true });
+      return;
+    }
+
     if (oauthError === ErrorTypes.AUTH_FAILED) {
       showToast({
         message: localize('com_auth_error_oauth_failed'),
@@ -89,6 +101,21 @@ function Login() {
       setSearchParams(newParams, { replace: true });
     }
   }, [searchParams, setSearchParams, showToast, localize, location.state, chcError]);
+
+  useEffect(() => {
+    if (!pendingMfaRedirect) {
+      return;
+    }
+    if (startupConfig?.serverDomain) {
+      window.location.href = `${startupConfig.serverDomain}/oauth/openid?prompt=login`;
+      return;
+    }
+    const timeout = setTimeout(() => {
+      setPendingMfaRedirect(false);
+      showToast({ message: localize('com_auth_error_oauth_failed'), status: 'error' });
+    }, 5000);
+    return () => clearTimeout(timeout);
+  }, [pendingMfaRedirect, startupConfig, showToast, localize]);
 
   useEffect(() => {
     if (disableAutoRedirect) {
@@ -159,10 +186,10 @@ function Login() {
     );
   }
 
-  if (shouldAutoRedirect) {
+  if (pendingMfaRedirect || shouldAutoRedirect) {
     return (
       <p className="text-center text-sm text-gray-500 dark:text-gray-400">
-        {localize('com_ui_redirecting_to_provider', { 0: startupConfig.openidLabel })}
+        {localize('com_ui_redirecting_to_provider', { 0: startupConfig?.openidLabel ?? 'OpenID' })}
       </p>
     );
   }
