@@ -302,3 +302,84 @@ describe('axios 401 interceptor — Authorization header guard', () => {
     expect(refreshCall[0].url).toContain('api/auth/refresh');
   });
 });
+
+/**
+ * Tests are ordered deliberately: the redirect test sets a module-level
+ * _isRedirectingForAuthError flag that persists for the process lifetime.
+ * Non-redirect tests run first to avoid being affected by it.
+ */
+describe('axios 403 MFA interceptor', () => {
+  it('rejects normally on mfa_required without Authorization header (fresh page load)', async () => {
+    setTokenHeader(undefined);
+
+    mockAdapter.mockRejectedValueOnce({
+      response: { status: 403, data: { error_code: 'mfa_required' } },
+      config: { url: '/api/auth/refresh', headers: {} },
+    });
+
+    try {
+      await axios.get('/api/auth/refresh');
+    } catch {
+      // expected — no auth header means the error rejects normally
+    }
+
+    expect(mockAdapter).toHaveBeenCalledTimes(1);
+    expect(window.location.href).not.toContain('mfa_required');
+  });
+
+  it('does not trigger MFA redirect for non-MFA 403 errors', async () => {
+    setTokenHeader('valid-token');
+
+    mockAdapter.mockRejectedValueOnce({
+      response: { status: 403, data: { error_code: 'some_other_error' } },
+      config: { url: '/api/messages', headers: {} },
+    });
+
+    try {
+      await axios.get('/api/messages');
+    } catch {
+      // expected rejection
+    }
+
+    expect(mockAdapter).toHaveBeenCalledTimes(1);
+    expect(window.location.href).not.toContain('mfa_required');
+  });
+
+  it('redirects to login with mfa_required when user was previously authenticated', async () => {
+    setTokenHeader('valid-token');
+
+    mockAdapter.mockRejectedValueOnce({
+      response: { status: 403, data: { error_code: 'mfa_required' } },
+      config: { url: '/api/auth/refresh', headers: {} },
+    });
+
+    const outcome = await Promise.race([
+      axios.get('/api/auth/refresh').then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 50)),
+    ]);
+
+    expect(outcome).toBe('pending');
+    expect(window.location.href).toContain('error=mfa_required');
+    expect(window.location.href).toContain('redirect=false');
+  });
+
+  it('suppresses duplicate redirects for concurrent mfa_required errors', async () => {
+    setTokenHeader('valid-token');
+
+    mockAdapter.mockRejectedValueOnce({
+      response: { status: 403, data: { error_code: 'mfa_required' } },
+      config: { url: '/api/messages', headers: {} },
+    });
+
+    try {
+      await axios.get('/api/messages');
+    } catch {
+      // _isRedirectingForAuthError is already true — 403 block skipped, error rejects normally
+    }
+
+    expect(mockAdapter).toHaveBeenCalledTimes(1);
+  });
+});

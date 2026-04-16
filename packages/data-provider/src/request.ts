@@ -111,12 +111,14 @@ if (typeof window !== 'undefined') {
             base +
             '/login?redirect=false&error=tenant_not_eligible&error_description=' +
             encodeURIComponent(
-              error.response.data?.error ||
-                'LibreChat is not enabled for the current organization',
+              error.response.data?.error || 'LibreChat is not enabled for the current organization',
             );
           return new Promise(() => {});
         }
-        if (errorCode === ErrorTypes.MFA_REQUIRED) {
+        if (
+          errorCode === ErrorTypes.MFA_REQUIRED &&
+          axios.defaults.headers.common['Authorization']
+        ) {
           _isRedirectingForAuthError = true;
           const loginUrl = endpoints.buildLoginRedirectUrl({ disableAutoRedirect: true });
           const sep = loginUrl.includes('?') ? '&' : '?';
