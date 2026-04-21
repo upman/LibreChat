@@ -29,8 +29,8 @@ jest.mock('./resolve', () => ({
   LIBRECHAT_ORG_FEATURE: 'FT_ORG_LIBRECHAT',
 }));
 
-function createMockReq(user = {}, session = {}): ServerRequest {
-  return { user, session } as unknown as ServerRequest;
+function createMockReq(user = {}, session = {}, headers = {}): ServerRequest {
+  return { user, session, headers } as unknown as ServerRequest;
 }
 
 function createMockRes(): Response {
@@ -98,6 +98,51 @@ describe('requireChcContext', () => {
 
     expect(mockRun).toHaveBeenCalledWith({ tenantId: 'org-a' }, expect.any(Function));
     expect(next).toHaveBeenCalled();
+  });
+
+  it('ignores whitespace-only x-chc-org-id and falls back to user.tenantId', async () => {
+    setCachedGUSD('cp-user-1', buildCachedContext());
+    const req = createMockReq(
+      { idOnTheSource: 'cp-user-1', tenantId: 'org-a' },
+      {},
+      { 'x-chc-org-id': '   ' },
+    );
+    const res = createMockRes();
+    const next: NextFunction = jest.fn();
+
+    await requireChcContext(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(req.tenantId).toBe('org-a');
+  });
+
+  it('prefers x-chc-org-id header over user.tenantId when setting req.tenantId', async () => {
+    setCachedGUSD(
+      'cp-user-1',
+      buildCachedContext({
+        chcSessionDetails: {
+          organizations: {},
+          orgFeatures: {
+            'org-a': ['FT_ORG_LIBRECHAT'],
+            'org-b': ['FT_ORG_LIBRECHAT'],
+          },
+          orgRolesV2: {},
+        },
+      }),
+    );
+    const req = createMockReq(
+      { idOnTheSource: 'cp-user-1', tenantId: 'org-a' },
+      {},
+      { 'x-chc-org-id': 'org-b' },
+    );
+    const res = createMockRes();
+    const next: NextFunction = jest.fn();
+
+    await requireChcContext(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(req.tenantId).toBe('org-b');
+    expect(mockRun).toHaveBeenCalledWith({ tenantId: 'org-b' }, expect.any(Function));
   });
 
   it('returns 401 when user has no idOnTheSource', async () => {

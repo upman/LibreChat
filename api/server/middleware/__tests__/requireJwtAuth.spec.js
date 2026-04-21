@@ -43,12 +43,28 @@ jest.mock('@librechat/api', () => {
       }
       return tenantStorage.run({ tenantId }, async () => next());
     },
+    requireChcContext: jest.fn(),
+    switchOrg: jest.fn(),
+    isSwitchError: jest.fn((r) => r && typeof r.errorCode === 'string'),
+    invalidateSession: jest.fn(),
   };
 });
+
+// `~/models` pulls in Redis/cache at module load; stub with the symbols
+// requireJwtAuth.js imports at top-level.
+jest.mock('~/models', () => ({
+  findUser: jest.fn(),
+  findUsers: jest.fn(),
+  createUser: jest.fn(),
+  updateUser: jest.fn(),
+  provisionDeps: {},
+}));
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 const requireJwtAuth = require('../requireJwtAuth');
+const { chcSwitchOrg, chcContextPipeline } = requireJwtAuth;
+const { switchOrg, invalidateSession, requireChcContext } = require('@librechat/api');
 
 function mockReq(user) {
   return { headers: {}, _mockUser: user };
@@ -112,5 +128,101 @@ describe('requireJwtAuth tenant context chaining', () => {
 
   it('ALS context is not set at top-level scope (outside any request)', () => {
     expect(getTenantId()).toBeUndefined();
+  });
+});
+
+function switchReq(user, tenantId = 'org-b') {
+  return {
+    user,
+    tenantId,
+    cpContext: {},
+    chcUserId: 'cp-user-1',
+  };
+}
+
+function switchRes() {
+  return { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+}
+
+describe('chcSwitchOrg', () => {
+  beforeEach(() => {
+    switchOrg.mockReset();
+    invalidateSession.mockClear();
+  });
+
+  it('passes through when user.tenantId already matches req.tenantId', async () => {
+    const next = jest.fn();
+    await chcSwitchOrg(switchReq({ tenantId: 'org-b', openidId: 'oid-1' }), switchRes(), next);
+    expect(next).toHaveBeenCalledWith();
+    expect(switchOrg).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 OPENID_IDENTITY_MISSING when user has no openidId', async () => {
+    const res = switchRes();
+    const next = jest.fn();
+    await chcSwitchOrg(switchReq({ tenantId: 'org-a' }), res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(invalidateSession).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error_code: 'OPENID_IDENTITY_MISSING' }),
+    );
+  });
+
+  it('returns 403 when switchOrg reports a switch error', async () => {
+    switchOrg.mockResolvedValue({ error: 'nope', errorCode: 'ORG_NOT_ELIGIBLE' });
+    const res = switchRes();
+    const next = jest.fn();
+    await chcSwitchOrg(switchReq({ tenantId: 'org-a', openidId: 'oid-1' }), res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({ error: 'nope', error_code: 'ORG_NOT_ELIGIBLE' });
+  });
+
+  it('replaces req.user and preserves federatedTokens on success', async () => {
+    const resolved = { _id: { toString: () => 'new-id' }, tenantId: 'org-b' };
+    switchOrg.mockResolvedValue({ tenantUser: resolved, tenantId: 'org-b', role: 'USER' });
+    const priorTokens = { access_token: 'tok' };
+    const req = switchReq({ tenantId: 'org-a', openidId: 'oid-1', federatedTokens: priorTokens });
+    const next = jest.fn();
+    await chcSwitchOrg(req, switchRes(), next);
+    expect(next).toHaveBeenCalledWith();
+    expect(req.user).not.toBe(resolved);
+    expect(req.user.tenantId).toBe('org-b');
+    expect(req.user.federatedTokens).toBe(priorTokens);
+    expect(req.user.id).toBe('new-id');
+    expect(resolved.federatedTokens).toBeUndefined();
+    expect(resolved.id).toBeUndefined();
+  });
+
+  it('returns 500 TENANT_RESOLUTION_FAILED when switchOrg throws', async () => {
+    switchOrg.mockRejectedValue(new Error('boom'));
+    const res = switchRes();
+    const next = jest.fn();
+    await chcSwitchOrg(switchReq({ tenantId: 'org-a', openidId: 'oid-1' }), res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error_code: 'TENANT_RESOLUTION_FAILED' }),
+    );
+  });
+});
+
+describe('chcContextPipeline', () => {
+  beforeEach(() => {
+    switchOrg.mockReset();
+    requireChcContext.mockReset();
+  });
+
+  it('propagates requireChcContext errors without invoking chcSwitchOrg', async () => {
+    const ctxErr = new Error('ctx failed');
+    requireChcContext.mockImplementation((_req, _res, cb) => cb(ctxErr));
+
+    const req = switchReq({ tenantId: 'org-a', openidId: 'oid-1' });
+    const next = jest.fn();
+    await chcContextPipeline(req, switchRes(), next);
+
+    expect(next).toHaveBeenCalledWith(ctxErr);
+    expect(switchOrg).not.toHaveBeenCalled();
   });
 });

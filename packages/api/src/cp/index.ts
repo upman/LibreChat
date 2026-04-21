@@ -25,7 +25,7 @@ export {
   V1_ADMIN_ROLE,
 } from './resolve';
 export { resolveTenant } from './tenant';
-export { requireChcContext, invalidateSession } from './middleware';
+export { requireChcContext, invalidateSession, readChcOrgHeader } from './middleware';
 export { requireChcIdentity } from './identity';
 export { provisionTenant } from './provision';
 export { findOrCreateTenantUser, findLastTenantForCpUser, buildTenantUserInput } from './user';

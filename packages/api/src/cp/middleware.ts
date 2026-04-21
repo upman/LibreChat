@@ -3,9 +3,22 @@ import { tenantStorage, logger } from '@librechat/data-schemas';
 import type { Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
 
-import { resolveGUSD, LIBRECHAT_ORG_FEATURE } from './resolve';
+import { LIBRECHAT_ORG_FEATURE } from './resolve';
 import { getCachedGUSD } from './cache';
 import { fetchGUSDWithRefresh } from './refresh';
+
+/**
+ * Reads and trims the `x-chc-org-id` request header. Returns undefined when the
+ * header is absent, non-string, or only whitespace.
+ */
+export function readChcOrgHeader(req: ServerRequest): string | undefined {
+  const raw = req.headers['x-chc-org-id'];
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
 
 const SESSION_COOKIES = [
   'token',
@@ -63,7 +76,8 @@ export async function requireChcContext(
   }
 
   const cpUserId = user.idOnTheSource;
-  const tenantId = user.tenantId || user.lastTenantId;
+  // x-chc-org-id overrides the persisted tenant on the user doc
+  const tenantId = readChcOrgHeader(req) || user.tenantId || user.lastTenantId;
   if (!tenantId) {
     logger.warn(`[requireChcContext] No tenant resolved for cpUserId=${cpUserId}`);
     invalidateSession(req, res);

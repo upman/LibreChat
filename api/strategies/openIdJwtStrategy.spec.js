@@ -23,11 +23,21 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('@librechat/api', () => ({
   isEnabled: jest.fn(() => false),
   findOpenIDUser: jest.fn(),
+  resolveChcStrategyUser: jest.fn(),
+  handleChcLogin: jest.fn(),
+  isChcLoginError: jest.fn(() => false),
+  readChcOrgHeader: jest.fn((req) => {
+    const raw = req?.headers?.['x-chc-org-id'];
+    return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
+  }),
   math: jest.fn((val, fallback) => fallback),
 }));
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
   updateUser: jest.fn(),
+  findUsers: jest.fn(),
+  createUser: jest.fn(),
+  provisionDeps: {},
 }));
 jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn(() => ({
@@ -41,9 +51,15 @@ jest.mock('~/cache/getLogStores', () =>
   jest.fn().mockReturnValue({ get: jest.fn(), set: jest.fn() }),
 );
 
-const { findOpenIDUser } = require('@librechat/api');
+const {
+  isEnabled,
+  findOpenIDUser,
+  resolveChcStrategyUser,
+  handleChcLogin,
+  isChcLoginError,
+} = require('@librechat/api');
 const openIdJwtLogin = require('./openIdJwtStrategy');
-const { findUser, updateUser } = require('~/models');
+const { findUser, updateUser, findUsers, createUser } = require('~/models');
 
 // Helper: build a mock openIdConfig
 const mockOpenIdConfig = {
@@ -369,5 +385,65 @@ describe('openIdJwtStrategy – OPENID_EMAIL_CLAIM', () => {
       'legacy-db-id',
       expect.objectContaining({ provider: 'openid', openidId: payloadNoEmail.sub }),
     );
+  });
+});
+
+describe('openIdJwtStrategy – CHC integration', () => {
+  const payload = { sub: 'oidc-123', email: 'test@example.com', exp: 9999999999 };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.CHC_INT_ENABLED = 'true';
+    isEnabled.mockReturnValue(true);
+    updateUser.mockResolvedValue({});
+    openIdJwtLogin(mockOpenIdConfig);
+  });
+
+  afterEach(() => {
+    delete process.env.CHC_INT_ENABLED;
+  });
+
+  it('should JIT-provision a new user when no existing user doc is found', async () => {
+    const provisionedUser = { _id: { toString: () => 'new-user-id' }, role: SystemRoles.USER };
+    resolveChcStrategyUser.mockResolvedValue({ user: null, error: null, migration: false });
+    handleChcLogin.mockResolvedValue({ tenantUser: provisionedUser });
+    isChcLoginError.mockReturnValue(false);
+
+    const req = {
+      headers: { authorization: 'Bearer chc-token', 'x-chc-org-id': 'org-123' },
+      session: {},
+    };
+    const { user } = await invokeVerify(req, payload);
+
+    expect(handleChcLogin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cpAccessToken: 'chc-token',
+        requestedOrgId: 'org-123',
+        openidId: payload.sub,
+        userMethods: expect.objectContaining({ findUser, findUsers, createUser, updateUser }),
+      }),
+    );
+    expect(user.id).toBe('new-user-id');
+    expect(user.federatedTokens).toEqual({ access_token: 'chc-token', expires_at: payload.exp });
+  });
+
+  it('should reject when JIT provisioning fails', async () => {
+    resolveChcStrategyUser.mockResolvedValue({ user: null, error: null, migration: false });
+    handleChcLogin.mockResolvedValue({ error: 'provisioning_failed' });
+    isChcLoginError.mockReturnValue(true);
+
+    const req = { headers: { authorization: 'Bearer chc-token' }, session: {} };
+    const { user, info } = await invokeVerify(req, payload);
+
+    expect(user).toBe(false);
+    expect(info).toEqual({ message: 'provisioning_failed' });
+  });
+
+  it('should call done(err) when handleChcLogin throws', async () => {
+    resolveChcStrategyUser.mockResolvedValue({ user: null, error: null, migration: false });
+    handleChcLogin.mockRejectedValue(new Error('CP API down'));
+
+    const req = { headers: { authorization: 'Bearer chc-token' }, session: {} };
+    await expect(invokeVerify(req, payload)).rejects.toThrow('CP API down');
   });
 });

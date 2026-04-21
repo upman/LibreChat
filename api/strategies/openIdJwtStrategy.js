@@ -3,10 +3,18 @@ const jwksRsa = require('jwks-rsa');
 const { logger } = require('@librechat/data-schemas');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SystemRoles } = require('librechat-data-provider');
-const { isEnabled, findOpenIDUser, resolveChcStrategyUser, math } = require('@librechat/api');
+const {
+  isEnabled,
+  findOpenIDUser,
+  resolveChcStrategyUser,
+  handleChcLogin,
+  isChcLoginError,
+  readChcOrgHeader,
+  math,
+} = require('@librechat/api');
 const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const { getOpenIdEmail } = require('./openidStrategy');
-const { updateUser, findUser, findUsers } = require('~/models');
+const { updateUser, findUser, findUsers, createUser, provisionDeps } = require('~/models');
 
 /**
  * @function openIdJwtLogin
@@ -113,6 +121,31 @@ const openIdJwtLogin = (openIdConfig) => {
           };
 
           done(null, user);
+        } else if (isEnabled(process.env.CHC_INT_ENABLED)) {
+          /** JIT provisioning: first-time headless Bearer caller with no existing user doc. */
+          const requestedOrgId = readChcOrgHeader(req);
+          logger.info(
+            `[openIdJwtLogin] No user doc for sub=${payload?.sub}, attempting JIT provisioning` +
+              (requestedOrgId ? ` for org=${requestedOrgId}` : ''),
+          );
+          const jitResult = await handleChcLogin({
+            cpAccessToken: rawToken,
+            requestedOrgId,
+            openidId: payload.sub,
+            provisionDeps,
+            userMethods: { findUser, findUsers, createUser, updateUser },
+          });
+          if (isChcLoginError(jitResult)) {
+            logger.warn(`[openIdJwtLogin] JIT provisioning failed: ${jitResult.error}`);
+            done(null, false, { message: jitResult.error });
+            return;
+          }
+          const provisionedUser = jitResult.tenantUser;
+          done(null, {
+            ...provisionedUser,
+            id: provisionedUser._id.toString(),
+            federatedTokens: { access_token: rawToken, expires_at: payload.exp },
+          });
         } else {
           logger.warn(
             '[openIdJwtLogin] openId JwtStrategy => no user found with the sub claims: ' +
@@ -122,6 +155,7 @@ const openIdJwtLogin = (openIdConfig) => {
           done(null, false);
         }
       } catch (err) {
+        logger.error('[openIdJwtLogin] Strategy error:', err);
         done(err, false);
       }
     },
