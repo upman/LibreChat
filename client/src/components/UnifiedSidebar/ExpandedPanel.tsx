@@ -6,12 +6,8 @@ import { QueryKeys } from 'librechat-data-provider';
 import { Skeleton, Sidebar, Button, TooltipAnchor } from '@librechat/client';
 import type { NavLink } from '~/common';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
-<<<<<<< HEAD
-import { useActivePanel, resolveActivePanel } from '~/Providers';
-import { useGetStartupConfig } from '~/data-provider';
-=======
 import { useActivePanel, resolveActivePanel, DEFAULT_PANEL } from '~/Providers';
->>>>>>> origin/upstream-dev
+import { useGetStartupConfig } from '~/data-provider';
 import { useLocalize, useNewConvo } from '~/hooks';
 import { clearMessagesCache, cn } from '~/utils';
 import store from '~/store';
