@@ -32,6 +32,10 @@ jest.mock('~/hooks', () => ({
   useNewConvo: () => ({ newConversation: mockNewConversation }),
 }));
 
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({ data: undefined }),
+}));
+
 jest.mock('~/utils', () => ({
   clearMessagesCache: (...args: unknown[]) => mockClearMessagesCache(...args),
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
