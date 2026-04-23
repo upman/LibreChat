@@ -1,4 +1,4 @@
-import { logger } from '@librechat/data-schemas';
+import { logger, getTenantId } from '@librechat/data-schemas';
 import type { OAuthClientInformation } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { TokenMethods } from '@librechat/data-schemas';
@@ -7,7 +7,7 @@ import type { FlowStateManager } from '~/flow/manager';
 import type * as t from './types';
 import { MCPTokenStorage, MCPOAuthHandler, ReauthenticationRequiredError } from '~/mcp/oauth';
 import { PENDING_STALE_MS, normalizeExpiresAt } from '~/flow/manager';
-import { sanitizeUrlForLogging } from './utils';
+import { sanitizeUrlForLogging, isClientRejectionMessage } from './utils';
 import { withTimeout } from '~/utils/promise';
 import { MCPConnection } from './connection';
 import { processMCPEnv } from '~/utils';
@@ -264,6 +264,7 @@ export class MCPConnectionFactory {
             findToken: this.tokenMethods!.findToken!,
             createToken: this.tokenMethods!.createToken,
             updateToken: this.tokenMethods!.updateToken,
+            deleteTokens: this.tokenMethods!.deleteTokens,
             refreshTokens: this.createRefreshTokensFunction(),
           });
         },
@@ -365,7 +366,7 @@ export class MCPConnectionFactory {
           }
 
           // Store flow state BEFORE redirecting so the callback can find it
-          const metadataWithUrl = { ...flowMetadata, authorizationUrl };
+          const metadataWithUrl = { ...flowMetadata, authorizationUrl, tenantId: getTenantId() };
           await this.flowManager!.initFlow(newFlowId, 'mcp_oauth', metadataWithUrl);
           await MCPOAuthHandler.storeStateMapping(flowMetadata.state, newFlowId, this.flowManager!);
 
@@ -503,14 +504,7 @@ export class MCPConnectionFactory {
       return false;
     }
     if ('message' in error && typeof error.message === 'string') {
-      const msg = error.message.toLowerCase();
-      return (
-        msg.includes('invalid_client') ||
-        msg.includes('unauthorized_client') ||
-        msg.includes('client_id mismatch') ||
-        msg.includes('client not found') ||
-        msg.includes('unknown client')
-      );
+      return isClientRejectionMessage(error.message);
     }
     return false;
   }
@@ -676,7 +670,7 @@ export class MCPConnectionFactory {
       reusedStoredClient = flowMetadata.reusedStoredClient === true;
 
       // Store flow state BEFORE redirecting so the callback can find it
-      const metadataWithUrl = { ...flowMetadata, authorizationUrl };
+      const metadataWithUrl = { ...flowMetadata, authorizationUrl, tenantId: getTenantId() };
       await this.flowManager.initFlow(newFlowId, 'mcp_oauth', metadataWithUrl);
       await MCPOAuthHandler.storeStateMapping(flowMetadata.state, newFlowId, this.flowManager);
 
