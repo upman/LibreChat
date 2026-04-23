@@ -38,11 +38,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="sync/upstream-$(date +%Y%m%d-%H%M%S)"
+          DATE="$(date +%Y-%m-%d)"
           git checkout -b "$BRANCH"
 
-          # Attempt the merge — if it conflicts, commit the conflict markers
-          # so the PR is visible and reviewable
-          if git merge origin/upstream-dev --no-ff -m "chore: merge upstream $(date +%Y-%m-%d)"; then
+          # Attempt the merge. On conflict, commit the markers as-is so the
+          # PR is visible; open it as a draft with a `has-conflicts` label so
+          # the state is impossible to miss.
+          HAS_CONFLICTS=0
+          if ! git merge origin/upstream-dev --no-ff -m "chore: merge upstream $DATE"; then
+            HAS_CONFLICTS=1
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            git add -A
+            git commit --no-edit -m "chore: merge upstream $DATE (conflicts)"
+          fi
+
+          git push origin "$BRANCH"
+
+          if [ "$HAS_CONFLICTS" -eq 0 ]; then
+            TITLE="chore: sync upstream $DATE"
             BODY="$(cat <<'EOF'
           ## Upstream sync
 
@@ -51,30 +64,45 @@ jobs:
           **Merge status:** Clean — no conflicts detected.
           EOF
           )"
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body "$BODY"
           else
-            # Stage conflicting files as-is so we can push
-            git add -A
-            git commit --no-edit -m "chore: merge upstream $(date +%Y-%m-%d) (conflicts)"
-            CONFLICTS=$(git diff --name-only HEAD~1)
+            TITLE="chore: sync upstream $DATE [CONFLICTS — resolve before merge]"
             BODY="$(cat <<EOF
-          ## Upstream sync
+          ## Upstream sync — :warning: CONFLICTS
 
           This PR merges the latest changes from \`upstream-dev\` into \`main\`.
 
-          **Merge status: CONFLICTS** — manual resolution required.
+          > [!WARNING]
+          > The merge commit contains **unresolved conflict markers**. GitHub reports the PR as mergeable because the markers have been committed, so this must be resolved manually before merging.
 
-          **Files needing resolution:**
+          ### Files needing resolution
           \`\`\`
           $CONFLICTS
           \`\`\`
+
+          ### How to resolve
+          \`\`\`bash
+          git fetch origin $BRANCH
+          git checkout $BRANCH
+          # edit each file above, remove <<<<<<< / ======= / >>>>>>> markers
+          git add <files>
+          git commit -m "fix: resolve merge conflicts"
+          git push
+          \`\`\`
+
+          Confirm CI (ESLint, Vite build) passes before marking ready for review.
           EOF
           )"
+            gh label create has-conflicts --color B60205 --description "Sync PR with unresolved merge conflicts" --force >/dev/null 2>&1 || true
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body "$BODY" \
+              --draft \
+              --label has-conflicts
           fi
-
-          git push origin "$BRANCH"
-
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "chore: sync upstream $(date +%Y-%m-%d)" \
-            --body "$BODY"
