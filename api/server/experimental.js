@@ -389,15 +389,6 @@ if (cluster.isMaster) {
         }:${port}`,
       );
 
-<<<<<<< HEAD
-      /** Initialize MCP servers and OAuth reconnection — shared operator config */
-      await runAsSystem(async () => {
-        await initializeMCPs();
-        await initializeOAuthReconnectManager();
-      });
-      /** Migrations write tenant-scoped ACL entries */
-      await tenantProvision(checkMigrations);
-=======
       /**
        * The listen callback is async, so any rejection from these awaits
        * would otherwise be detached from `startServer().catch(...)`. Without
@@ -406,15 +397,17 @@ if (cluster.isMaster) {
        * partially initialized.
        */
       try {
-        /** Initialize MCP servers and OAuth reconnection for this worker */
-        await initializeMCPs();
-        await initializeOAuthReconnectManager();
-        await checkMigrations();
+        /** Initialize MCP servers and OAuth reconnection — shared operator config */
+        await runAsSystem(async () => {
+          await initializeMCPs();
+          await initializeOAuthReconnectManager();
+        });
+        /** Migrations write tenant-scoped ACL entries */
+        await tenantProvision(checkMigrations);
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);
         process.exit(1);
       }
->>>>>>> origin/upstream-dev
     });
 
     /** Handle inter-process messages from master */

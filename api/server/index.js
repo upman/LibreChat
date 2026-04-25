@@ -284,13 +284,6 @@ const startServer = async () => {
       logger.info(`Server listening at http://${host == '0.0.0.0' ? 'localhost' : host}:${port}`);
     }
 
-<<<<<<< HEAD
-    await runAsSystem(async () => {
-      await initializeMCPs();
-      await initializeOAuthReconnectManager();
-    });
-    await tenantProvision(checkMigrations);
-=======
     /**
      * The listen callback is async, so any rejection from these awaits would
      * otherwise be detached from `startServer().catch(...)` (which only
@@ -304,8 +297,7 @@ const startServer = async () => {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
       });
-      await checkMigrations();
->>>>>>> origin/upstream-dev
+      await tenantProvision(checkMigrations);
 
       // Configure stream services (auto-detects Redis from USE_REDIS env var)
       const streamServices = createStreamServices();
