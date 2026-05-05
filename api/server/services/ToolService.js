@@ -1,25 +1,27 @@
 const { logger } = require('@librechat/data-schemas');
-const { tool: toolFn, DynamicStructuredTool } = require('@langchain/core/tools');
+const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
   StepTypes,
   GraphEvents,
   createToolSearch,
-  Constants: AgentConstants,
   createBashExecutionTool,
+  Constants: AgentConstants,
   createProgrammaticToolCallingTool,
 } = require('@librechat/agents');
 const {
   sendEvent,
   getToolkitKey,
+  createSafeUser,
   getUserMCPAuthMap,
   loadToolDefinitions,
   GenerationJobManager,
   isActionDomainAllowed,
   buildWebSearchContext,
   buildImageToolContext,
-  buildToolClassification,
   buildOAuthToolCallName,
+  buildToolClassification,
+  buildWebSearchDynamicContext,
 } = require('@librechat/api');
 const {
   Time,
@@ -359,6 +361,7 @@ async function processRequiredActions(client, requiredActions) {
           const isDomainAllowed = await isActionDomainAllowed(
             action.metadata.domain,
             appConfig?.actions?.allowedDomains,
+            appConfig?.actions?.allowedAddresses,
           );
           if (!isDomainAllowed) {
             continue;
@@ -427,6 +430,7 @@ async function processRequiredActions(client, requiredActions) {
 
       // We've already decrypted the metadata, so we can pass it directly
       const _allowedDomains = appConfig?.actions?.allowedDomains;
+      const _allowedAddresses = appConfig?.actions?.allowedAddresses;
       tool = await createActionTool({
         userId: client.req.user.id,
         res: client.res,
@@ -435,6 +439,7 @@ async function processRequiredActions(client, requiredActions) {
         // Note: intentionally not passing zodSchema, name, and description for assistants API
         encrypted, // Pass the encrypted values for OAuth flow
         useSSRFProtection: !Array.isArray(_allowedDomains) || _allowedDomains.length === 0,
+        allowedAddresses: _allowedAddresses,
       });
       if (!tool) {
         logger.warn(
@@ -489,6 +494,7 @@ async function processRequiredActions(client, requiredActions) {
  * @returns {Promise<{
  *   tools?: StructuredTool[];
  *   toolContextMap?: Record<string, unknown>;
+ *   dynamicToolContextMap?: Record<string, unknown>;
  *   userMCPAuthMap?: Record<string, Record<string, string>>;
  *   toolRegistry?: Map<string, import('~/utils/toolClassification').LCTool>;
  *   hasDeferredTools?: boolean;
@@ -657,6 +663,7 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
 
     const definitions = [];
     const allowedDomains = appConfig?.actions?.allowedDomains;
+    const allowedAddresses = appConfig?.actions?.allowedAddresses;
     const normalizedToolNames = new Set(
       actionToolNames.map((n) => n.replace(domainSeparatorRegex, '_')),
     );
@@ -668,7 +675,11 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
       const legacyDomain = legacyDomainEncode(action.metadata.domain);
       const legacyNormalized = legacyDomain.replace(domainSeparatorRegex, '_');
 
-      const isDomainAllowed = await isActionDomainAllowed(action.metadata.domain, allowedDomains);
+      const isDomainAllowed = await isActionDomainAllowed(
+        action.metadata.domain,
+        allowedDomains,
+        allowedAddresses,
+      );
       if (!isDomainAllowed) {
         logger.warn(
           `[Actions] Domain "${action.metadata.domain}" not in allowedDomains. ` +
@@ -779,19 +790,39 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
 
   /** @type {Record<string, string>} */
   const toolContextMap = {};
+  /** @type {Record<string, string>} */
+  const dynamicToolContextMap = {};
   const hasWebSearch = filteredTools.includes(Tools.web_search);
   const hasFileSearch = filteredTools.includes(Tools.file_search);
   const hasExecuteCode = filteredTools.includes(Tools.execute_code);
 
   if (hasWebSearch) {
     toolContextMap[Tools.web_search] = buildWebSearchContext();
+    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext(
+      req.conversationCreatedAt,
+    );
   }
 
+  /**
+   * `files` carry the upload session_ids; we surface them so client.js can
+   * seed `Graph.sessions[EXECUTE_CODE]` before run start. Without that seed,
+   * the agents-side `ToolNode.getCodeSessionContext` returns undefined on
+   * call #1, `_injected_files` is never set on the tool call, and the
+   * sandbox can't see the prior turn's generated artifacts on first read.
+   */
+  let primedCodeFiles;
   if (hasExecuteCode && tool_resources) {
     try {
-      const { toolContext } = await primeCodeFiles({ req, tool_resources, agentId: agent.id });
+      const { toolContext, files } = await primeCodeFiles({
+        req,
+        tool_resources,
+        agentId: agent.id,
+      });
       if (toolContext) {
-        toolContextMap[Tools.execute_code] = toolContext;
+        dynamicToolContextMap[Tools.execute_code] = toolContext;
+      }
+      if (files?.length) {
+        primedCodeFiles = files;
       }
     } catch (error) {
       logger.error('[loadToolDefinitionsWrapper] Error priming code files:', error);
@@ -806,7 +837,7 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
         agentId: agent.id,
       });
       if (toolContext) {
-        toolContextMap[Tools.file_search] = toolContext;
+        dynamicToolContextMap[Tools.file_search] = toolContext;
       }
     } catch (error) {
       logger.error('[loadToolDefinitionsWrapper] Error priming search files:', error);
@@ -825,7 +856,7 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
         contextDescription: 'image editing',
       });
       if (toolContext) {
-        toolContextMap.image_edit_oai = toolContext;
+        dynamicToolContextMap.image_edit_oai = toolContext;
       }
     }
 
@@ -836,7 +867,7 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
         contextDescription: 'image context',
       });
       if (toolContext) {
-        toolContextMap.gemini_image_gen = toolContext;
+        dynamicToolContextMap.gemini_image_gen = toolContext;
       }
     }
   }
@@ -845,9 +876,11 @@ async function loadToolDefinitionsWrapper({ req, res, agent, streamId = null, to
     toolRegistry,
     userMCPAuthMap,
     toolContextMap,
+    dynamicToolContextMap,
     toolDefinitions,
     hasDeferredTools,
     actionsEnabled,
+    primedCodeFiles,
   };
 }
 
@@ -946,7 +979,7 @@ async function loadAgentTools({
     });
   }
 
-  const { loadedTools, toolContextMap } = await loadTools({
+  const { loadedTools, toolContextMap, dynamicToolContextMap, primedCodeFiles } = await loadTools({
     agent,
     signal,
     userMCPAuthMap,
@@ -1031,10 +1064,12 @@ async function loadAgentTools({
       toolRegistry,
       userMCPAuthMap,
       toolContextMap,
+      dynamicToolContextMap,
       toolDefinitions,
       hasDeferredTools,
       actionsEnabled,
       tools: agentTools,
+      primedCodeFiles,
     };
   }
 
@@ -1047,10 +1082,12 @@ async function loadAgentTools({
       toolRegistry,
       userMCPAuthMap,
       toolContextMap,
+      dynamicToolContextMap,
       toolDefinitions,
       hasDeferredTools,
       actionsEnabled,
       tools: agentTools,
+      primedCodeFiles,
     };
   }
 
@@ -1066,6 +1103,7 @@ async function loadAgentTools({
     const isDomainAllowed = await isActionDomainAllowed(
       action.metadata.domain,
       appConfig?.actions?.allowedDomains,
+      appConfig?.actions?.allowedAddresses,
     );
     if (!isDomainAllowed) {
       continue;
@@ -1137,6 +1175,7 @@ async function loadAgentTools({
 
     const { action, encrypted, zodSchema, requestBuilder, functionSignature } = entry;
     const _allowedDomains = appConfig?.actions?.allowedDomains;
+    const _allowedAddresses = appConfig?.actions?.allowedAddresses;
     const tool = await createActionTool({
       userId: req.user.id,
       res,
@@ -1148,6 +1187,7 @@ async function loadAgentTools({
       description: functionSignature.description,
       streamId,
       useSSRFProtection: !Array.isArray(_allowedDomains) || _allowedDomains.length === 0,
+      allowedAddresses: _allowedAddresses,
     });
 
     if (!tool) {
@@ -1169,11 +1209,13 @@ async function loadAgentTools({
   return {
     toolRegistry,
     toolContextMap,
+    dynamicToolContextMap,
     userMCPAuthMap,
     toolDefinitions,
     hasDeferredTools,
     actionsEnabled,
     tools: agentTools,
+    primedCodeFiles,
   };
 }
 
@@ -1211,7 +1253,35 @@ async function loadToolsForExecution({
 }) {
   const appConfig = req.config;
   const allLoadedTools = [];
+  /**
+   * Re-inject user identity into the configurable returned to the
+   * `ON_TOOL_EXECUTE` handler. The handler merges this onto whatever
+   * configurable arrived with the dispatched event:
+   *   `{ ...configurable, ...toolConfigurable }`
+   * For the parent agent the outer stream config (set in AgentClient /
+   * Responses / OpenAI controllers) already carries `user` and `user_id`;
+   * re-injecting the same values from `req.user` is a no-op there.
+   *
+   * For SUBAGENT tool calls the SDK's `SubagentExecutor` invokes the child
+   * workflow with a fresh configurable of `{ thread_id }` only — the
+   * parent's `user`, `user_id`, and `userMCPAuthMap` are dropped on the way
+   * into the child graph. Without this re-injection, downstream MCP tools
+   * read `config.configurable.user?.id || user_id === undefined` and
+   * `MCPManager.getConnection` throws "No connection found for server X"
+   * (it can't fall through to the user-connection path without a userId).
+   *
+   * Only set the keys when `req.user.id` is present. Because
+   * `toolConfigurable` wins the merge, writing `user_id: undefined`
+   * unconditionally would clobber the outer config's `'api-user'`
+   * fallback (set by Responses/OpenAI controllers when `req.user` is
+   * absent). Omitting the keys lets the merge preserve whatever the
+   * outer configurable already had.
+   */
   const configurable = { userMCPAuthMap };
+  if (req.user?.id) {
+    configurable.user = createSafeUser(req.user);
+    configurable.user_id = req.user.id;
+  }
 
   if (actionsEnabled === undefined) {
     const enabledCapabilities = await resolveAgentCapabilities(req, appConfig, agent?.id);
@@ -1376,6 +1446,7 @@ async function loadActionToolsForExecution({
   // See registerActionTools for the key-shape rationale.
   const toolToAction = new Map();
   const allowedDomains = appConfig?.actions?.allowedDomains;
+  const allowedAddresses = appConfig?.actions?.allowedAddresses;
 
   for (const action of actionSets) {
     const domain = await domainParser(action.metadata.domain, true);
@@ -1383,7 +1454,11 @@ async function loadActionToolsForExecution({
     const legacyDomain = legacyDomainEncode(action.metadata.domain);
     const legacyNormalized = legacyDomain.replace(domainSeparatorRegex, '_');
 
-    const isDomainAllowed = await isActionDomainAllowed(action.metadata.domain, allowedDomains);
+    const isDomainAllowed = await isActionDomainAllowed(
+      action.metadata.domain,
+      allowedDomains,
+      allowedAddresses,
+    );
     if (!isDomainAllowed) {
       logger.warn(
         `[Actions] Domain "${action.metadata.domain}" not in allowedDomains. ` +
@@ -1457,6 +1532,7 @@ async function loadActionToolsForExecution({
       name: toolName,
       description: functionSignature.description,
       useSSRFProtection: !Array.isArray(allowedDomains) || allowedDomains.length === 0,
+      allowedAddresses,
     });
 
     if (!tool) {

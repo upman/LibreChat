@@ -75,6 +75,9 @@ class ModelEndHandler {
       if (modelName) {
         usage.model = modelName;
       }
+      if (agentContext.provider) {
+        usage.provider = agentContext.provider;
+      }
 
       const taggedUsage = markSummarizationUsage(usage, metadata);
 
@@ -543,6 +546,15 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
     }
 
     for (const file of output.artifact.files) {
+      /* `inherited` files are unchanged passthroughs of inputs the caller
+       * already owns (skill files, prior session inputs, inherited
+       * .dirkeep markers). Skip post-processing: re-downloading with the
+       * user's session key 403s when the file is entity-scoped, and the
+       * input is already persisted at its origin. They remain available
+       * to subsequent calls via primeInvokedSkills / session inheritance. */
+      if (file.inherited) {
+        continue;
+      }
       const { id, name } = file;
       artifactPromises.push(
         (async () => {
@@ -553,7 +565,23 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null }) 
             messageId: metadata.run_id,
             toolCallId: output.tool_call_id,
             conversationId: metadata.thread_id,
-            session_id: output.artifact.session_id,
+            /**
+             * Use the FILE's session_id (storage session), not the
+             * top-level artifact session_id (exec session). The codeapi
+             * worker reports two distinct ids on a tool result:
+             *   - `artifact.session_id` is the EXEC session — the
+             *     sandbox VM that ran the bash command. Files don't
+             *     live there; it's torn down post-execution.
+             *   - `file.session_id` is the STORAGE session — the
+             *     file-server bucket prefix where artifacts actually
+             *     live and are served from.
+             * `processCodeOutput` builds `/download/{session_id}/{id}`,
+             * so passing the exec id resolves to a path the file-server
+             * doesn't know about and 404s. Fall back to artifact-level
+             * for older worker payloads that may not populate per-file
+             * ids.
+             */
+            session_id: file.session_id ?? output.artifact.session_id,
           });
           if (!streamId && !res.headersSent) {
             return fileMetadata;
@@ -744,6 +772,15 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
     }
 
     for (const file of output.artifact.files) {
+      /* `inherited` files are unchanged passthroughs of inputs the caller
+       * already owns (skill files, prior session inputs, inherited
+       * .dirkeep markers). Skip post-processing: re-downloading with the
+       * user's session key 403s when the file is entity-scoped, and the
+       * input is already persisted at its origin. They remain available
+       * to subsequent calls via primeInvokedSkills / session inheritance. */
+      if (file.inherited) {
+        continue;
+      }
       const { id, name } = file;
       artifactPromises.push(
         (async () => {
@@ -754,7 +791,23 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
             messageId: metadata.run_id,
             toolCallId: output.tool_call_id,
             conversationId: metadata.thread_id,
-            session_id: output.artifact.session_id,
+            /**
+             * Use the FILE's session_id (storage session), not the
+             * top-level artifact session_id (exec session). The codeapi
+             * worker reports two distinct ids on a tool result:
+             *   - `artifact.session_id` is the EXEC session — the
+             *     sandbox VM that ran the bash command. Files don't
+             *     live there; it's torn down post-execution.
+             *   - `file.session_id` is the STORAGE session — the
+             *     file-server bucket prefix where artifacts actually
+             *     live and are served from.
+             * `processCodeOutput` builds `/download/{session_id}/{id}`,
+             * so passing the exec id resolves to a path the file-server
+             * doesn't know about and 404s. Fall back to artifact-level
+             * for older worker payloads that may not populate per-file
+             * ids.
+             */
+            session_id: file.session_id ?? output.artifact.session_id,
           });
 
           if (!fileMetadata) {
@@ -771,6 +824,19 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
               width: fileMetadata.width,
               height: fileMetadata.height,
               tool_call_id: output.tool_call_id,
+              /* Inline text / sanitized HTML preview from
+               * `extractCodeArtifactText` — drives the file artifact panel's
+               * rich preview for DOCX/XLSX/CSV/PPTX. Pass null explicitly
+               * (rather than undefined) so the wire format is stable for the
+               * empty-text gate on the client. */
+              text: fileMetadata.text ?? null,
+              /* Trust signal so the client can route .docx/.csv/.xlsx/
+               * .pptx attachments to the office HTML buckets only when
+               * the backend produced sanitized full-document HTML.
+               * RAG-uploaded plain text from mammoth.extractRawText
+               * arrives without this flag and must NOT be injected as
+               * HTML — Codex P1 review on PR #12934. */
+              textFormat: fileMetadata.textFormat ?? null,
             };
             writeResponsesAttachment(res, tracker, attachment, metadata);
           }

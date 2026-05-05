@@ -5,6 +5,7 @@ const { logger } = require('@librechat/data-schemas');
 const {
   isEnabled,
   findOpenIDUser,
+  getOpenIdIssuer,
   resolveChcRefreshUser,
   refreshChcContext,
   setChcTokenCookie,
@@ -158,6 +159,7 @@ const refreshController = async (req, res) => {
         refreshParams,
       );
       const claims = tokenset.claims();
+      const openidIssuer = getOpenIdIssuer(claims, openIdConfig);
 
       let user;
 
@@ -183,6 +185,7 @@ const refreshController = async (req, res) => {
           findUser,
           email: getOpenIdEmail(claims),
           openidId: claims.sub,
+          openidIssuer,
           idOnTheSource: claims.oid,
           strategyName: 'refreshController',
         });
@@ -205,6 +208,7 @@ const refreshController = async (req, res) => {
           await updateUser(user._id.toString(), {
             provider: 'openid',
             openidId: claims.sub,
+            ...(openidIssuer ? { openidIssuer } : {}),
           });
           logger.info(
             `[refreshController] Updated user ${user.email} openidId (${reason}): ${user.openidId ?? 'null'} -> ${claims.sub}`,
