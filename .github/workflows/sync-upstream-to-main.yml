@@ -41,15 +41,18 @@ jobs:
           DATE="$(date +%Y-%m-%d)"
           git checkout -b "$BRANCH"
 
-          # Attempt the merge. On conflict, commit the markers as-is so the
-          # PR is visible; open it as a draft with a `has-conflicts` label so
-          # the state is impossible to miss.
+          # Attempt the merge with --no-commit so we can detect conflicts
+          # without committing markers to git history. On conflict, abort and
+          # push the branch at pre-merge state (= main); the PR description
+          # includes a recipe for the human to do the merge locally and push,
+          # which lands as a single clean merge commit on the branch.
           HAS_CONFLICTS=0
-          if ! git merge origin/upstream-dev --no-ff -m "chore: merge upstream $DATE"; then
+          if ! git merge origin/upstream-dev --no-ff --no-commit -m "chore: merge upstream $DATE"; then
             HAS_CONFLICTS=1
             CONFLICTS=$(git diff --name-only --diff-filter=U)
-            git add -A
-            git commit --no-edit -m "chore: merge upstream $DATE (conflicts)"
+            git merge --abort
+          else
+            git commit --no-edit
           fi
 
           git push origin "$BRANCH"
@@ -70,28 +73,28 @@ jobs:
               --title "$TITLE" \
               --body "$BODY"
           else
-            TITLE="chore: sync upstream $DATE [CONFLICTS — resolve before merge]"
+            TITLE="chore: sync upstream $DATE [CONFLICTS — manual merge required]"
             BODY="$(cat <<EOF
           ## Upstream sync — :warning: CONFLICTS
 
-          This PR merges the latest changes from \`upstream-dev\` into \`main\`.
+          This PR is a placeholder. The merge of \`upstream-dev\` into \`main\` has unresolved conflicts and must be performed locally — the workflow does NOT commit conflict markers to git history.
 
-          > [!WARNING]
-          > The merge commit contains **unresolved conflict markers**. GitHub reports the PR as mergeable because the markers have been committed, so this must be resolved manually before merging.
+          The PR branch (\`$BRANCH\`) currently points at \`main\` (no merge yet). Do the merge locally and push; the PR will then contain a single clean merge commit.
 
-          ### Files needing resolution
+          ### Files that will conflict
           \`\`\`
           $CONFLICTS
           \`\`\`
 
           ### How to resolve
           \`\`\`bash
-          git fetch origin $BRANCH
+          git fetch origin
           git checkout $BRANCH
-          # edit each file above, remove <<<<<<< / ======= / >>>>>>> markers
-          git add <files>
-          git commit -m "fix: resolve merge conflicts"
-          git push
+          git merge origin/upstream-dev
+          # resolve markers in the listed files
+          git add -u
+          git commit            # default merge commit message is fine
+          git push              # fast-forward, no force needed
           \`\`\`
 
           Confirm CI (ESLint, Vite build) passes before marking ready for review.
