@@ -1,3 +1,18 @@
+/**
+ * Stub `buildBashExecutionToolDescription` since the installed SDK version
+ * may pre-date the export. Kept as a partial mock so `Providers` and the
+ * rest of the namespace come through `jest.requireActual`.
+ */
+jest.mock('@librechat/agents', () => ({
+  ...jest.requireActual('@librechat/agents'),
+  buildBashExecutionToolDescription: ({
+    enableToolOutputReferences,
+  }: {
+    enableToolOutputReferences?: boolean;
+  } = {}): string =>
+    enableToolOutputReferences === true ? 'bash {{tool<idx>turn<turn>}}' : 'bash',
+}));
+
 import { Providers } from '@librechat/agents';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { Agent } from 'librechat-data-provider';
@@ -135,6 +150,7 @@ function createMocks(overrides?: {
   const loadTools = jest.fn().mockResolvedValue({
     tools: [],
     toolContextMap: {},
+    dynamicToolContextMap: {},
     userMCPAuthMap: undefined,
     toolRegistry: undefined,
     toolDefinitions: [],
@@ -224,6 +240,83 @@ describe('initializeAgent — custom provider token lookup', () => {
     // optionalChainWithEmptyCheck → Math.max formula. The toHaveBeenCalledWith
     // assertion above catches the actual provider-resolution regression.
     expect(result.maxContextTokens).toBe(Math.round((65536 - 4096) * 0.95));
+  });
+});
+
+describe('initializeAgent — stable and dynamic instruction fields', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('moves instructions with temporal special vars into the dynamic tail using the conversation anchor', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.instructions = 'Conversation opened at {{iso_datetime}}';
+    req.conversationCreatedAt = '2023-12-31T23:59:58.000Z';
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.additional_instructions).toBe('Conversation opened at 2023-12-31T23:59:58.000Z');
+  });
+
+  it('keeps non-temporal special vars in stable instructions', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.instructions = 'You are helping {{current_user}}.';
+    req.user = { id: 'user-1', name: 'Test User' } as never;
+    req.conversationCreatedAt = '2023-12-31T23:59:58.000Z';
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBe('You are helping Test User.');
+    expect(result.additional_instructions).toBeUndefined();
+  });
+
+  it('appends generated artifact guidance without replacing existing dynamic instructions', async () => {
+    const { generateArtifactsPrompt } = jest.requireMock('~/prompts') as {
+      generateArtifactsPrompt: jest.Mock;
+    };
+    generateArtifactsPrompt.mockReturnValue('Artifact guidance');
+
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.additional_instructions = 'Existing dynamic';
+    agent.artifacts = 'enabled' as never;
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.additional_instructions).toBe('Existing dynamic\n\nArtifact guidance');
   });
 });
 

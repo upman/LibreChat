@@ -50,6 +50,20 @@ import type { TFilterFilesByAgentAccess } from './resources';
  * manages overflow. `createRun` can further override this via `SummarizationConfig.reserveRatio`.
  */
 const DEFAULT_RESERVE_RATIO = 0.05;
+const temporalSpecialVarRegex = /{{\s*(current_date|current_datetime|iso_datetime)\s*}}/i;
+
+function hasTemporalSpecialVars(text: string): boolean {
+  return temporalSpecialVarRegex.test(text);
+}
+
+function appendAdditionalInstructions(agent: Agent, text?: string | null): void {
+  if (text == null || text === '') {
+    return;
+  }
+  agent.additional_instructions = [agent.additional_instructions ?? '', text]
+    .filter(Boolean)
+    .join('\n\n');
+}
 
 /**
  * Extended agent type with additional fields needed after initialization
@@ -58,6 +72,7 @@ export type InitializedAgent = Agent & {
   tools: GenericTool[];
   attachments: IMongoFile[];
   toolContextMap: Record<string, unknown>;
+  dynamicToolContextMap?: Record<string, unknown>;
   maxContextTokens: number;
   /** Pre-ratio context budget (agentMaxContextNum - maxOutputTokensNum). Used by createRun to apply a configurable reserve ratio. */
   baseContextTokens?: number;
@@ -91,6 +106,13 @@ export type InitializedAgent = Agent & {
   codeEnvAvailable: boolean;
   /** Accessible skill IDs for ACL checking at execute time */
   accessibleSkillIds?: import('mongoose').Types.ObjectId[];
+  /**
+   * Names of skills the runtime can resolve, mirroring `accessibleSkillIds`.
+   * Surfaced to the runtime so handlers like `read_file` can decide if a
+   * `{firstSegment}/...` path refers to a real skill (vs. a code-env path
+   * that should be routed to the bash fallback) without an extra DB lookup.
+   */
+  activeSkillNames?: Set<string>;
   /** Number of skills in the catalog (used to determine if SkillTool should be registered) */
   skillCount?: number;
   /**
@@ -109,6 +131,18 @@ export type InitializedAgent = Agent & {
    * via `unionPrimeAllowedTools` (same pipeline as manual primes).
    */
   alwaysApplySkillPrimes?: ResolvedAlwaysApplySkill[];
+  /**
+   * Pre-uploaded code-env file refs from `tool_resources.execute_code`
+   * (carries the conversation's prior-turn generated artifacts and any
+   * user uploads). Captured by the `loadTools` callback; the AgentClient
+   * merges these across all run agents into `Graph.sessions[EXECUTE_CODE]`
+   * before run start so the very first `execute_code` / `bash_tool` call
+   * sees them as `_injected_files`. Without this seed the agents-side
+   * `CodeExecutor` falls back to `/files/{session_id}` — but `session_id`
+   * is itself only populated by a previous successful execution, so on
+   * call #1 the sandbox can't see the files at all.
+   */
+  primedCodeFiles?: import('@librechat/agents').CodeEnvFile[];
 };
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 32000;
@@ -144,12 +178,21 @@ export interface InitializeAgentParams {
     /** Full tool instances (only present when definitionsOnly=false) */
     tools?: GenericTool[];
     toolContextMap?: Record<string, unknown>;
+    dynamicToolContextMap?: Record<string, unknown>;
     userMCPAuthMap?: Record<string, Record<string, string>>;
     toolRegistry?: LCToolRegistry;
     /** Serializable tool definitions for event-driven mode */
     toolDefinitions?: LCTool[];
     hasDeferredTools?: boolean;
     actionsEnabled?: boolean;
+    /**
+     * Pre-uploaded code-env file refs for the agent's
+     * `tool_resources.execute_code`. Bubbled up so the run host can seed
+     * `Graph.sessions[EXECUTE_CODE]` before the first tool call —
+     * otherwise `_injected_files` is empty on call #1 and prior-turn
+     * artifacts don't reach the sandbox.
+     */
+    primedCodeFiles?: import('@librechat/agents').CodeEnvFile[];
   } | null>;
   /** Endpoint option (contains model_parameters and endpoint info) */
   endpointOption?: Partial<TEndpointOption>;
@@ -617,19 +660,23 @@ export async function initializeAgent(
   const {
     toolRegistry,
     toolContextMap,
+    dynamicToolContextMap,
     userMCPAuthMap,
     toolDefinitions: loadedToolDefinitions,
     hasDeferredTools,
     actionsEnabled,
     tools: structuredTools,
+    primedCodeFiles,
   } = loadToolsResult ?? {
     tools: [],
     toolContextMap: {},
+    dynamicToolContextMap: {},
     userMCPAuthMap: undefined,
     toolRegistry: undefined,
     toolDefinitions: [],
     hasDeferredTools: false,
     actionsEnabled: undefined,
+    primedCodeFiles: undefined,
   };
 
   let toolDefinitions = loadedToolDefinitions;
@@ -742,6 +789,7 @@ export async function initializeAgent(
       toolRegistry,
       toolDefinitions,
       includeBash: true,
+      enableToolOutputReferences: effectiveCodeEnvAvailable,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
   } else if (agentRequestsCodeExec) {
@@ -787,10 +835,17 @@ export async function initializeAgent(
   }
 
   if (agent.instructions && agent.instructions !== '') {
-    agent.instructions = replaceSpecialVars({
+    const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
       user: req.user ? (req.user as unknown as TUser) : null,
+      now: req.conversationCreatedAt,
     });
+    if (hasTemporalSpecialVars(agent.instructions)) {
+      agent.instructions = undefined;
+      appendAdditionalInstructions(agent, resolvedInstructions);
+    } else {
+      agent.instructions = resolvedInstructions;
+    }
   }
 
   if (typeof agent.artifacts === 'string' && agent.artifacts !== '') {
@@ -798,7 +853,7 @@ export async function initializeAgent(
       endpoint: agent.provider,
       artifacts: agent.artifacts as never,
     });
-    agent.additional_instructions = artifactsPromptResult ?? undefined;
+    appendAdditionalInstructions(agent, artifactsPromptResult);
   }
 
   let skillCount = 0;
@@ -809,6 +864,7 @@ export async function initializeAgent(
    * LLM (or a direct-invocation path) names one.
    */
   let executableSkillIds = params.accessibleSkillIds;
+  let activeSkillNames: Set<string> | undefined;
   const { accessibleSkillIds } = params;
   if (accessibleSkillIds && accessibleSkillIds.length > 0) {
     const skillResult = await injectSkillCatalog({
@@ -826,6 +882,7 @@ export async function initializeAgent(
     toolDefinitions = skillResult.toolDefinitions;
     skillCount = skillResult.skillCount;
     executableSkillIds = skillResult.activeSkillIds;
+    activeSkillNames = skillResult.activeSkillNames;
   }
 
   const agentMaxContextNum = Number(agentMaxContextTokens) || DEFAULT_MAX_CONTEXT_TOKENS;
@@ -862,10 +919,12 @@ export async function initializeAgent(
     codeEnvAvailable: effectiveCodeEnvAvailable,
     skillCount,
     accessibleSkillIds: executableSkillIds,
+    activeSkillNames,
     manualSkillPrimes,
     alwaysApplySkillPrimes,
     attachments: finalAttachments,
     toolContextMap: toolContextMap ?? {},
+    dynamicToolContextMap: dynamicToolContextMap ?? {},
     useLegacyContent: !!options.useLegacyContent,
     tools: (tools ?? []) as GenericTool[] & string[],
     maxToolResultChars: maxToolResultCharsResolved,
@@ -873,6 +932,7 @@ export async function initializeAgent(
       maxContextTokens != null && maxContextTokens > 0
         ? maxContextTokens
         : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
+    primedCodeFiles,
   };
 
   return initializedAgent;

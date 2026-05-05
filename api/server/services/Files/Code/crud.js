@@ -3,6 +3,7 @@ const { logger } = require('@librechat/data-schemas');
 const { getCodeBaseURL } = require('@librechat/agents');
 const {
   logAxiosError,
+  appendCodeEnvFile,
   createAxiosInstance,
   codeServerHttpAgent,
   codeServerHttpsAgent,
@@ -62,7 +63,7 @@ async function uploadCodeEnvFile({ req, stream, filename, entity_id = '' }) {
     if (entity_id.length > 0) {
       form.append('entity_id', entity_id);
     }
-    form.append('file', stream, filename);
+    appendCodeEnvFile(form, stream, filename);
 
     const baseURL = getCodeBaseURL();
     /** @type {import('axios').AxiosRequestConfig} */
@@ -112,17 +113,26 @@ async function uploadCodeEnvFile({ req, stream, filename, entity_id = '' }) {
  * @param {import('express').Request & { user: { id: string } }} params.req - The request object.
  * @param {Array<{ stream: NodeJS.ReadableStream; filename: string }>} params.files - Files to upload.
  * @param {string} [params.entity_id] - Optional entity ID.
+ * @param {boolean} [params.read_only] - When true, codeapi tags every file in
+ *   the batch as infrastructure (e.g. skill files). The flag is persisted as
+ *   MinIO object metadata (`X-Amz-Meta-Read-Only`) and travels with the file
+ *   through subsequent download/walk passes — sandboxed-code modifications
+ *   are dropped on the floor and the original ref is echoed back as
+ *   `inherited: true`, never as a generated artifact.
  * @returns {Promise<{ session_id: string; files: Array<{ fileId: string; filename: string }> }>}
  * @throws {Error} If the batch upload fails entirely.
  */
-async function batchUploadCodeEnvFiles({ req, files, entity_id = '' }) {
+async function batchUploadCodeEnvFiles({ req, files, entity_id = '', read_only = false }) {
   try {
     const form = new FormData();
     if (entity_id.length > 0) {
       form.append('entity_id', entity_id);
     }
+    if (read_only) {
+      form.append('read_only', 'true');
+    }
     for (const file of files) {
-      form.append('file', file.stream, file.filename);
+      appendCodeEnvFile(form, file.stream, file.filename);
     }
 
     const baseURL = getCodeBaseURL();

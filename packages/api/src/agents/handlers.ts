@@ -10,11 +10,12 @@ import type {
   ToolExecuteBatchRequest,
 } from '@librechat/agents';
 import { Types } from 'mongoose';
-import type { StructuredToolInterface } from '@langchain/core/tools';
-import type { ServerRequest } from '~/types';
-import { primeSkillFiles } from './skillFiles';
+import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { SkillFileRecord } from './skillFiles';
+import type { ServerRequest } from '~/types';
 import { buildSkillPrimeMessage } from './skills';
+import { cleanCodeToolOutput } from './cleanup';
+import { primeSkillFiles } from './skillFiles';
 import { runOutsideTracing } from '~/utils';
 
 export interface ToolEndCallbackData {
@@ -119,6 +120,20 @@ export interface ToolExecuteOptions {
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
   ) => Promise<void>;
+  /**
+   * Reads a code-execution sandbox file by shelling `cat` through the
+   * sandbox `/exec` endpoint. The host implementation supplies the
+   * codeapi base URL + auth and forwards the seeded `session_id` and
+   * `files` so the read lands in the same sandbox session that holds
+   * the agent's prior-turn artifacts. Returns `null` when codeapi is
+   * unavailable; throws on transport errors so the handler can surface
+   * a meaningful error message to the model.
+   */
+  readSandboxFile?: (params: {
+    file_path: string;
+    session_id?: string;
+    files?: Array<{ id: string; name: string; session_id?: string }>;
+  }) => Promise<{ content: string } | null>;
 }
 
 const MAX_READABLE_BYTES = 262_144;
@@ -131,6 +146,258 @@ function addLineNumbers(content: string): string {
   const lines = content.split('\n');
   const w = String(lines.length).length;
   return lines.map((l, i) => `${String(i + 1).padStart(w, ' ')} | ${l}`).join('\n');
+}
+
+/**
+ * Extensions whose contents `read_file` must never serialize as text. `cat`
+ * on a PNG inside the sandbox returns the raw bytes as stdout, JSON-encoded
+ * by codeapi with lossy UTF-8 replacement and then line-numbered by us —
+ * the result is a multi-KB blob of mojibake that pollutes the LLM context
+ * and exposes the raw bytes anyway. Short-circuit before the network call.
+ *
+ * Image categories surface a "use the existing attachment" message because
+ * the file was already attached to the conversation as part of the
+ * code-execution artifact pipeline — re-attaching here would dup it.
+ */
+const BINARY_EXTENSIONS_NEVER_READABLE = new Set([
+  // Raster images (already attached as artifacts by the code-execution
+  // pipeline). `.svg` is intentionally NOT in this list — it's an XML
+  // text format with no mojibake risk, and there are legitimate reasons
+  // for the model to inspect or edit a generated SVG. The post-fetch
+  // NUL-byte sniff still catches anything that turns out to be binary
+  // despite a `.svg` extension.
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.bmp',
+  '.tiff',
+  '.tif',
+  '.ico',
+  '.heic',
+  '.heif',
+  '.avif',
+  // Documents (binary container formats)
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.xls',
+  '.xlsx',
+  '.ppt',
+  '.pptx',
+  '.odt',
+  '.ods',
+  '.odp',
+  // Archives
+  '.zip',
+  '.tar',
+  '.gz',
+  '.tgz',
+  '.bz2',
+  '.xz',
+  '.7z',
+  '.rar',
+  '.lz4',
+  '.zst',
+  // Audio / video
+  '.mp3',
+  '.wav',
+  '.flac',
+  '.ogg',
+  '.m4a',
+  '.aac',
+  '.wma',
+  '.mp4',
+  '.mkv',
+  '.mov',
+  '.avi',
+  '.webm',
+  '.flv',
+  '.m4v',
+  // Executables / object files / native libs
+  '.exe',
+  '.dll',
+  '.so',
+  '.dylib',
+  '.o',
+  '.obj',
+  '.a',
+  '.lib',
+  '.bin',
+  '.class',
+  '.jar',
+  // Other byte-soup formats
+  '.parquet',
+  '.bson',
+  '.db',
+  '.sqlite',
+  '.sqlite3',
+  '.pyc',
+  '.pyo',
+  '.wasm',
+  '.ttf',
+  '.otf',
+  '.woff',
+  '.woff2',
+  '.eot',
+]);
+
+const IMAGE_EXTENSIONS_FOR_HINT = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.bmp',
+  '.tiff',
+  '.tif',
+  '.ico',
+  '.heic',
+  '.heif',
+  '.avif',
+]);
+
+function lowercaseExtension(filePath: string): string {
+  const dot = filePath.lastIndexOf('.');
+  const slash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+  if (dot < 0 || dot < slash) return '';
+  return filePath.slice(dot).toLowerCase();
+}
+
+/**
+ * Builds the model-visible error returned when `read_file` is invoked on
+ * a binary path. Phrasing is tuned for the LLM: states the fact (file is
+ * binary, can't be read as text), points at the correct affordance for
+ * each common case (image already in the chat; bash for everything else),
+ * and includes the path verbatim so the model can copy-paste into its
+ * next call.
+ */
+function buildBinaryFileError(filePath: string, ext: string): string {
+  if (IMAGE_EXTENSIONS_FOR_HINT.has(ext)) {
+    return `"${filePath}" is an image file (${ext}) and cannot be read as text. The image is already attached to the conversation and visible to the user. To process it programmatically, use \`bash_tool\` (e.g. \`file ${filePath}\` for metadata, or \`python3 -c '...'\` to operate on the bytes).`;
+  }
+  return `"${filePath}" is a binary file (${ext}) and cannot be read as text by \`read_file\`. Use \`bash_tool\` to process it (e.g. \`file ${filePath}\` for metadata, or a runtime-appropriate command for the format).`;
+}
+
+/**
+ * True when the first chunk of a string contains a NUL byte. Used as a
+ * post-fetch safety net for files whose extension didn't match the
+ * blocklist (no extension, novel format, etc.) — sniffs `cat` stdout to
+ * avoid ever forwarding mangled bytes to the LLM. 8KB is the same
+ * window the skill-file path uses; enough for any reasonable magic
+ * number while bounded enough to stay cheap.
+ */
+function looksBinary(content: string): boolean {
+  const limit = Math.min(content.length, 8192);
+  for (let i = 0; i < limit; i++) {
+    if (content.charCodeAt(i) === 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Routes a `read_file` call to the code-execution sandbox via the
+ * host-provided `readSandboxFile` callback. The sandbox session id and
+ * primed file refs come from `tc.codeSessionContext` (emitted by ToolNode
+ * for `read_file` tool calls in agents v3.1.72+) so the read lands in the
+ * same session that holds the agent's prior-turn artifacts. Returns a
+ * `ToolExecuteResult` with the file content (line-numbered) on success,
+ * or an instructive error pointing the model at `bash_tool` when the
+ * sandbox isn't reachable from this configuration.
+ *
+ * Two binary guards keep `cat`-on-a-PNG-style mojibake out of the LLM
+ * context: (1) an extension precheck that short-circuits known binary
+ * types BEFORE any network call, and (2) a NUL-byte content sniff after
+ * the read for unknown extensions. The codeapi `/exec` transport is JSON,
+ * which already lossily down-converts non-UTF-8 stdout to replacement
+ * characters — the bytes are unrecoverable here, so the goal is to fail
+ * fast with an instructive message rather than ship garbage.
+ */
+async function handleSandboxFileFallback(
+  tc: ToolCallRequest,
+  filePath: string,
+  options: ToolExecuteOptions,
+): Promise<ToolExecuteResult> {
+  const ext = lowercaseExtension(filePath);
+  if (BINARY_EXTENSIONS_NEVER_READABLE.has(ext)) {
+    return {
+      toolCallId: tc.id,
+      status: 'error',
+      content: '',
+      errorMessage: buildBinaryFileError(filePath, ext),
+    };
+  }
+
+  const { readSandboxFile } = options;
+  if (!readSandboxFile) {
+    return {
+      toolCallId: tc.id,
+      status: 'error',
+      content: '',
+      errorMessage: `Path "${filePath}" is not a skill file. Use \`bash_tool\` to read code-execution sandbox files (e.g. \`cat ${filePath}\`).`,
+    };
+  }
+
+  const ctx = tc.codeSessionContext as
+    | { session_id?: string; files?: Array<{ id: string; name: string; session_id?: string }> }
+    | undefined;
+  try {
+    const result = await readSandboxFile({
+      file_path: filePath,
+      session_id: ctx?.session_id,
+      files: ctx?.files,
+    });
+    if (!result || result.content == null) {
+      return {
+        toolCallId: tc.id,
+        status: 'error',
+        content: '',
+        errorMessage: `Failed to read "${filePath}" from the code-execution sandbox. Try \`bash_tool\` (e.g. \`cat ${filePath}\`).`,
+      };
+    }
+    if (looksBinary(result.content)) {
+      return {
+        toolCallId: tc.id,
+        status: 'error',
+        content: '',
+        errorMessage: `"${filePath}" appears to be a binary file and cannot be read as text. Use \`bash_tool\` to process it (e.g. \`file ${filePath}\` for metadata).`,
+      };
+    }
+    /**
+     * Cap before line-numbering. `addLineNumbers` allocates a SECOND
+     * full-size string with per-line prefixes, so a multi-MB log read
+     * would materialize ~2x in memory before downstream truncation
+     * kicks in. Match the skill-file path's `MAX_READABLE_BYTES`
+     * (256KB) ceiling: truncate the raw content first, then number,
+     * and surface the truncation to the model so it can use
+     * `bash_tool head` / `tail` for the rest.
+     */
+    let payload = result.content;
+    let truncated = false;
+    if (payload.length > MAX_READABLE_BYTES) {
+      payload = payload.slice(0, MAX_READABLE_BYTES);
+      truncated = true;
+    }
+    let numbered = addLineNumbers(payload);
+    if (truncated) {
+      numbered += `\n\n[truncated at ${MAX_READABLE_BYTES} bytes — use \`bash_tool\` (e.g. \`head -c\` / \`tail\`) to read the rest of "${filePath}"]`;
+    }
+    return {
+      toolCallId: tc.id,
+      status: 'success',
+      content: numbered,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[handleReadFileCall] Sandbox fallback failed for "${filePath}": ${message}`);
+    return {
+      toolCallId: tc.id,
+      status: 'error',
+      content: '',
+      errorMessage: `Error reading "${filePath}" from the code-execution sandbox: ${message}. Try \`bash_tool\` (e.g. \`cat ${filePath}\`).`,
+    };
+  }
 }
 
 async function handleReadFileCall(
@@ -151,8 +418,39 @@ async function handleReadFileCall(
     };
   }
 
+  const codeEnvAvailable = mergedConfigurable?.codeEnvAvailable === true;
+  const accessibleIds = (mergedConfigurable?.accessibleSkillIds as Types.ObjectId[]) ?? [];
+  /**
+   * `accessibleSkillIds` is the resolver's authoritative output (admin
+   * capability AND ACL access AND ephemeral badge / persisted
+   * `skills_enabled`). Empty ⇒ skills are not effectively in scope, so we
+   * skip skill resolution entirely and route to the sandbox fallback when
+   * the agent has code-execution available.
+   */
+  const skillsEffectivelyEnabled = accessibleIds.length > 0;
+
+  /**
+   * Short-circuit absolute code-env paths: the path can never be a skill
+   * reference (skill paths are relative `{skillName}/...`), and consulting
+   * `getSkillByName` would just burn a DB round-trip on a guaranteed miss.
+   */
+  if (args.file_path.startsWith('/mnt/data/')) {
+    if (codeEnvAvailable) {
+      return handleSandboxFileFallback(tc, args.file_path, options);
+    }
+    return {
+      toolCallId: tc.id,
+      status: 'error',
+      content: '',
+      errorMessage: `Path "${args.file_path}" is a code-execution sandbox path, but this agent does not have code execution enabled.`,
+    };
+  }
+
   const slashIdx = args.file_path.indexOf('/');
   if (slashIdx < 1) {
+    if (codeEnvAvailable) {
+      return handleSandboxFileFallback(tc, args.file_path, options);
+    }
     return {
       toolCallId: tc.id,
       status: 'error',
@@ -164,11 +462,81 @@ async function handleReadFileCall(
   const skillName = args.file_path.slice(0, slashIdx);
   const relativePath = args.file_path.slice(slashIdx + 1);
   if (!relativePath) {
+    /**
+     * `read_file("output/")`: a malformed-but-unambiguously-not-a-skill
+     * path. Stay consistent with the other malformed-path branches and
+     * route to the sandbox when code execution is available, instead of
+     * dead-ending with a skill-centric error message.
+     */
+    if (codeEnvAvailable) {
+      return handleSandboxFileFallback(tc, args.file_path, options);
+    }
     return {
       toolCallId: tc.id,
       status: 'error',
       content: '',
       errorMessage: 'Missing file path after skill name',
+    };
+  }
+
+  /**
+   * Skills not in scope (admin capability off, ephemeral badge off, or
+   * persisted `skills_enabled !== true` — all already collapsed into
+   * `accessibleSkillIds.length === 0` by `resolveAgentScopedSkillIds`):
+   * route to the sandbox fallback when code execution is available, else
+   * the lookup truly has nowhere to go.
+   */
+  if (!skillsEffectivelyEnabled) {
+    if (codeEnvAvailable) {
+      return handleSandboxFileFallback(tc, args.file_path, options);
+    }
+    return {
+      toolCallId: tc.id,
+      status: 'error',
+      content: '',
+      errorMessage:
+        'Skill files are not available for this agent and code execution is not enabled.',
+    };
+  }
+
+  /**
+   * Read the primed-skills map BEFORE the `activeSkillNames` shortcut.
+   *
+   * `activeSkillNames` is the catalog-visible set after the
+   * `SKILL_CATALOG_LIMIT` cap and the active-state filter run in
+   * `injectSkillCatalog`. Manual ($-popover) primes and always-apply
+   * primes are intentionally resolved off the wider `accessibleSkillIds`
+   * ACL set BEFORE catalog injection — see `resolveManualSkills` for
+   * why a skill outside the catalog cap can still be authorized for
+   * direct manual invocation. So a primed skill name may legitimately
+   * be absent from `activeSkillNames`. Treat any name in
+   * `skillPrimedIdsByName` as "known" for the gate below; otherwise the
+   * shortcut would misroute `read_file("primed-skill/references/foo.md")`
+   * to the sandbox even though the primed skill is in scope.
+   */
+  const skillPrimedIdsByName =
+    (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
+  const primedIdString = skillPrimedIdsByName[skillName];
+  const isPrimedThisTurn = primedIdString != null;
+
+  /**
+   * Skills are in scope, but the first segment isn't a name we know.
+   * Use the catalog-derived `activeSkillNames` Set (no DB read) to detect
+   * this and fall through to the sandbox so the model doesn't have to
+   * eat a wasted `read_file` error before retrying with `bash_tool`.
+   * Primed names bypass this shortcut even when absent from the catalog
+   * (see comment on `skillPrimedIdsByName` above).
+   */
+  const activeSkillNames = mergedConfigurable?.activeSkillNames as Set<string> | undefined;
+  if (activeSkillNames && !activeSkillNames.has(skillName) && !isPrimedThisTurn) {
+    if (codeEnvAvailable) {
+      return handleSandboxFileFallback(tc, args.file_path, options);
+    }
+    return {
+      toolCallId: tc.id,
+      status: 'error',
+      content: '',
+      errorMessage: `Skill "${skillName}" not found or not accessible`,
     };
   }
 
@@ -180,12 +548,6 @@ async function handleReadFileCall(
       errorMessage: 'File reading is not configured',
     };
   }
-
-  const accessibleIds = (mergedConfigurable?.accessibleSkillIds as Types.ObjectId[]) ?? [];
-  const skillPrimedIdsByName =
-    (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
-  const primedIdString = skillPrimedIdsByName[skillName];
-  const isPrimedThisTurn = primedIdString != null;
   /* On a primed lookup (manual `$` OR always-apply), pin the accessible
      set to ONLY the primed `_id`. This guarantees the doc whose body got
      primed is the SAME doc whose files we read, even when same-name
@@ -332,13 +694,13 @@ async function handleReadFileCall(
     }
 
     const stream = await strategy.getDownloadStream(req, file.filepath);
-    const chunks: Buffer[] = [];
+    const chunks: Uint8Array[] = [];
     // Use the larger binary limit as streaming cap; cheaper type-specific
     // checks happen after binary detection on the assembled buffer.
     const streamLimit = MAX_BINARY_BYTES;
     let streamedBytes = 0;
-    for await (const chunk of stream as AsyncIterable<Buffer>) {
-      streamedBytes += chunk.length;
+    for await (const chunk of stream as AsyncIterable<Uint8Array>) {
+      streamedBytes += chunk.byteLength;
       if (streamedBytes > streamLimit) {
         // Destroy the stream if possible to free resources
         if (
@@ -680,13 +1042,25 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     metadata,
                   } as Record<string, unknown>);
 
+                  // Code-execution tools emit per-call boilerplate
+                  // ("Note: ..." paragraphs and `| <annotation>` per-file
+                  // suffixes) that wastes tokens when re-injected into
+                  // every subsequent model turn. Strip it here, *after*
+                  // the tool resolved but *before* downstream consumers
+                  // (model context, SSE forwarding, persistence) see it.
+                  // Non-code-execution tools pass through unchanged.
+                  const cleanedContent =
+                    CODE_EXECUTION_TOOLS.has(tc.name) && typeof result.content === 'string'
+                      ? cleanCodeToolOutput(result.content)
+                      : result.content;
+
                   if (toolEndCallback) {
                     await toolEndCallback(
                       {
                         output: {
                           name: tc.name,
                           tool_call_id: tc.id,
-                          content: result.content,
+                          content: cleanedContent,
                           artifact: result.artifact,
                         },
                       },
@@ -702,7 +1076,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
 
                   return {
                     toolCallId: tc.id,
-                    content: result.content,
+                    content: cleanedContent,
                     artifact: result.artifact,
                     status: 'success' as const,
                   };

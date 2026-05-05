@@ -3,17 +3,18 @@ const jwksRsa = require('jwks-rsa');
 const { logger } = require('@librechat/data-schemas');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SystemRoles } = require('librechat-data-provider');
+const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const {
   isEnabled,
   findOpenIDUser,
+  getOpenIdEmail,
+  getOpenIdIssuer,
   resolveChcStrategyUser,
   handleChcLogin,
   isChcLoginError,
   readChcOrgHeader,
   math,
 } = require('@librechat/api');
-const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
-const { getOpenIdEmail } = require('./openidStrategy');
 const { updateUser, findUser, findUsers, createUser, provisionDeps } = require('~/models');
 
 /**
@@ -35,7 +36,9 @@ const { updateUser, findUser, findUsers, createUser, provisionDeps } = require('
  */
 const openIdJwtLogin = (openIdConfig) => {
   let jwksRsaOptions = {
-    cache: isEnabled(process.env.OPENID_JWKS_URL_CACHE_ENABLED) || true,
+    cache: process.env.OPENID_JWKS_URL_CACHE_ENABLED
+      ? isEnabled(process.env.OPENID_JWKS_URL_CACHE_ENABLED)
+      : true,
     cacheMaxAge: math(process.env.OPENID_JWKS_URL_CACHE_TIME, 60000),
     jwksUri: openIdConfig.serverMetadata().jwks_uri,
   };
@@ -59,6 +62,7 @@ const openIdJwtLogin = (openIdConfig) => {
       try {
         const authHeader = req.headers.authorization;
         const rawToken = authHeader?.replace('Bearer ', '');
+        const openidIssuer = getOpenIdIssuer(payload, openIdConfig);
 
         const { user, error, migration } = isEnabled(process.env.CHC_INT_ENABLED)
           ? await resolveChcStrategyUser(findOpenIDUser, {
@@ -66,12 +70,14 @@ const openIdJwtLogin = (openIdConfig) => {
               findUsers,
               email: payload ? getOpenIdEmail(payload) : undefined,
               openidId: payload?.sub,
+              openidIssuer,
               idOnTheSource: payload?.oid,
             })
           : await findOpenIDUser({
               findUser,
               email: payload ? getOpenIdEmail(payload) : undefined,
               openidId: payload?.sub,
+              openidIssuer,
               idOnTheSource: payload?.oid,
               strategyName: 'openIdJwtLogin',
             });
@@ -88,6 +94,9 @@ const openIdJwtLogin = (openIdConfig) => {
           if (migration) {
             updateData.provider = 'openid';
             updateData.openidId = payload?.sub;
+            if (openidIssuer) {
+              updateData.openidIssuer = openidIssuer;
+            }
           }
           if (!user.role) {
             user.role = SystemRoles.USER;

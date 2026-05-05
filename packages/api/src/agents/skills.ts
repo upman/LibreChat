@@ -1,9 +1,9 @@
 import { logger } from '@librechat/data-schemas';
-import { HumanMessage } from '@langchain/core/messages';
 import { isEphemeralAgentId } from 'librechat-data-provider';
+import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { formatSkillCatalog, SkillToolDefinition } from '@librechat/agents';
 import type { LCToolRegistry, LCTool, InjectedMessage } from '@librechat/agents';
-import type { BaseMessage } from '@langchain/core/messages';
+import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Agent } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { InitializeAgentDbMethods } from './initialize';
@@ -231,6 +231,15 @@ export interface InjectSkillCatalogResult {
    * resolvable.
    */
   activeSkillIds: Types.ObjectId[];
+  /**
+   * Names of skills the runtime can resolve, mirroring `activeSkillIds`.
+   * Surfaced so host-side handlers (e.g. `read_file`) can decide whether a
+   * `{firstSegment}/...` path is a real skill reference vs. a code-env path
+   * (`/mnt/data/...`) that should be routed to the bash fallback — without
+   * issuing an extra `getSkillByName` round-trip just to discover the name
+   * doesn't resolve.
+   */
+  activeSkillNames: Set<string>;
 }
 
 /**
@@ -261,7 +270,12 @@ export async function injectSkillCatalog(
   } = params;
 
   if (!listSkillsByAccess || accessibleSkillIds.length === 0) {
-    return { toolDefinitions: inputDefs, skillCount: 0, activeSkillIds: [] };
+    return {
+      toolDefinitions: inputDefs,
+      skillCount: 0,
+      activeSkillIds: [],
+      activeSkillNames: new Set<string>(),
+    };
   }
 
   type SkillSummary = Awaited<ReturnType<NonNullable<typeof listSkillsByAccess>>>['skills'][number];
@@ -321,7 +335,12 @@ export async function injectSkillCatalog(
   }
 
   if (activeSkills.length === 0) {
-    return { toolDefinitions: inputDefs, skillCount: 0, activeSkillIds: [] };
+    return {
+      toolDefinitions: inputDefs,
+      skillCount: 0,
+      activeSkillIds: [],
+      activeSkillNames: new Set<string>(),
+    };
   }
 
   if (!reachedEnd && visibleCount < SKILL_CATALOG_LIMIT) {
@@ -418,10 +437,23 @@ export async function injectSkillCatalog(
     toolRegistry?.set(skillToolDef.name, skillToolDef);
   }
 
+  /**
+   * Forward `enableToolOutputReferences` to keep the skills caller
+   * symmetric with `initializeAgent`'s call. Today `initializeAgent`
+   * registers `bash_tool` first and the registry `.has()` check makes
+   * this call a no-op — but if call order ever flips (skills-first),
+   * a missing flag here would silently produce a `bash_tool`
+   * description without the `{{tool<idx>turn<turn>}}` guide, and the
+   * `initializeAgent` pass would become the no-op. Mirror the gate
+   * `initializeAgent` uses (`effectiveCodeEnvAvailable`, which here
+   * is `codeEnvAvailable === true`) so both paths produce identical
+   * tool definitions regardless of which fires first.
+   */
   const codeExecResult = registerCodeExecutionTools({
     toolRegistry,
     toolDefinitions: workingDefs,
     includeBash: codeEnvAvailable === true,
+    enableToolOutputReferences: codeEnvAvailable === true,
   });
   workingDefs = codeExecResult.toolDefinitions;
 
@@ -429,6 +461,7 @@ export async function injectSkillCatalog(
     toolDefinitions: workingDefs,
     skillCount: catalogVisibleSkills.length,
     activeSkillIds: executableSkills.map((s) => s._id),
+    activeSkillNames: new Set<string>(executableSkills.map((s) => s.name)),
   };
 }
 

@@ -20,13 +20,18 @@ import type {
   IState,
   LCTool,
 } from '@librechat/agents';
-import type { Agent, AgentSubagentsConfig, SummarizationConfig } from 'librechat-data-provider';
-import type { BaseMessage } from '@langchain/core/messages';
+import type {
+  Agent,
+  AgentModelParameters,
+  AgentSubagentsConfig,
+  SummarizationConfig,
+} from 'librechat-data-provider';
+import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type * as t from '~/types';
 import { getProviderConfig } from '~/endpoints/config/providers';
-import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { resolveHeaders, createSafeUser } from '~/utils/env';
+import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { isUserProvided } from '~/utils/common';
 
 /** Expected shape of JSON tool search results */
@@ -233,12 +238,21 @@ type RunAgent = Omit<Agent, 'tools'> & {
   /** Pre-ratio context budget from initializeAgent. */
   baseContextTokens?: number;
   useLegacyContent?: boolean;
-  toolContextMap?: Record<string, string>;
+  toolContextMap?: Record<string, unknown>;
+  dynamicToolContextMap?: Record<string, unknown>;
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
   /** Precomputed flag indicating if any tools have defer_loading enabled */
   hasDeferredTools?: boolean;
+  /**
+   * Per-agent codeenv gate set by `initializeAgent`: admin-level
+   * `execute_code` capability AND the agent actually requested
+   * `execute_code` in its tools. Used here to enable
+   * `RunConfig.toolOutputReferences` only on runs where the bash tool
+   * is actually registered.
+   */
+  codeEnvAvailable?: boolean;
   /** Optional per-agent summarization overrides */
   summarization?: SummarizationConfig;
   /**
@@ -264,6 +278,31 @@ function hasUnresolvedPlaceholder(value: string): boolean {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+const nullableAgentModelParameterKeys = [
+  'temperature',
+  'maxContextTokens',
+  'max_context_tokens',
+  'max_output_tokens',
+  'top_p',
+  'frequency_penalty',
+  'presence_penalty',
+] satisfies Array<keyof AgentModelParameters>;
+
+function normalizeAgentModelParameters(
+  modelParameters: AgentModelParameters | undefined,
+): Partial<AgentModelParameters> | undefined {
+  if (!modelParameters) {
+    return undefined;
+  }
+  const normalized: Partial<AgentModelParameters> = { ...modelParameters };
+  for (const key of nullableAgentModelParameterKeys) {
+    if (normalized[key] === null) {
+      delete normalized[key];
+    }
+  }
+  return normalized;
 }
 
 /**
@@ -389,9 +428,11 @@ function resolveSummarizationProvider(
       },
       rawProvider,
     );
-    const clientOverrides: SummarizationClientOverrides = {
-      ...llmConfig,
-    };
+    const { apiKey: resolvedApiKey, ...llmConfigOverrides } = llmConfig;
+    const clientOverrides: SummarizationClientOverrides = { ...llmConfigOverrides };
+    if (typeof resolvedApiKey === 'string') {
+      clientOverrides.apiKey = resolvedApiKey;
+    }
     if (configOptions) {
       clientOverrides.configuration = configOptions;
     }
@@ -501,6 +542,43 @@ function computeEffectiveMaxContextTokens(
 
 /** Identifier for the self-spawn subagent (reuses parent's AgentInputs in an isolated child graph). */
 const SELF_SUBAGENT_TYPE = 'self';
+
+/**
+ * Recursive any-true check across the agent tree: returns `true` if this
+ * agent or any subagent (transitively) has the per-agent codeenv gate
+ * enabled.
+ *
+ * The SDK's tool-output reference registry is shared across every
+ * `ToolNode` compiled from the run's graph (parent + every subagent
+ * alike), so a single subagent with `bash_tool` registered is enough to
+ * make `RunConfig.toolOutputReferences` worth activating for the whole
+ * run — without it, the subagent's `{{tool<idx>turn<turn>}}`
+ * placeholders would pass through to the shell unsubstituted.
+ *
+ * Cycle-safe via a `visited` set, mirroring `buildSubagentConfigs`'s
+ * `ancestors` pattern. The bash tool description itself is still gated
+ * per-agent in `initializeAgent`, so only agents that actually have
+ * bash registered learn the `{{…}}` syntax — broadening the run-level
+ * registry gate doesn't broaden the model-facing surface.
+ */
+function anyAgentHasCodeEnv(agents: RunAgent[], visited: Set<string> = new Set()): boolean {
+  for (const agent of agents) {
+    if (visited.has(agent.id)) {
+      continue;
+    }
+    visited.add(agent.id);
+    if (agent.codeEnvAvailable === true) {
+      return true;
+    }
+    if (
+      agent.subagentAgentConfigs != null &&
+      anyAgentHasCodeEnv(agent.subagentAgentConfigs, visited)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Builds SubagentConfig entries for an agent: optional self-spawn plus any
@@ -672,24 +750,28 @@ export async function createRun({
       { user, requestBody },
     );
 
-    const llmConfig: t.RunLLMConfig = Object.assign(
+    const modelParameters = normalizeAgentModelParameters(agent.model_parameters);
+    const llmConfig = Object.assign(
       {
         provider,
         streaming,
         streamUsage,
       },
-      agent.model_parameters,
-    );
+      modelParameters,
+    ) as t.RunLLMConfig;
 
-    const systemMessage = Object.values(agent.toolContextMap ?? {})
-      .join('\n')
-      .trim();
+    const joinInstructionMap = (map?: Record<string, unknown>) =>
+      Object.values(map ?? {})
+        .filter((value): value is string => typeof value === 'string' && value !== '')
+        .join('\n')
+        .trim();
 
-    const systemContent = [
-      systemMessage,
-      agent.instructions ?? '',
-      agent.additional_instructions ?? '',
-    ]
+    const toolInstructions = joinInstructionMap(agent.toolContextMap);
+    const dynamicToolInstructions = joinInstructionMap(agent.dynamicToolContextMap);
+
+    const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
+
+    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
       .join('\n')
       .trim();
 
@@ -782,6 +864,7 @@ export async function createRun({
       tools: agent.tools,
       clientOptions: llmConfig,
       instructions: systemContent,
+      additional_instructions: additionalInstructions || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,
@@ -818,6 +901,25 @@ export async function createRun({
     (graphConfig as StandardGraphConfig).type = 'standard';
   }
 
+  /**
+   * Enable tool-output references when the bash tool is actually
+   * present anywhere in this run — top-level agent OR any subagent
+   * (transitively). `codeEnvAvailable` on each `RunAgent` is the
+   * per-agent gate (admin `execute_code` capability AND the agent's
+   * own `tools` listing `execute_code`), so the feature follows the
+   * same activation as the bash-tool registration in
+   * `initializeAgent`. The walk into `subagentAgentConfigs` is
+   * load-bearing: a parent without `execute_code` can spawn a
+   * subagent that has it, and the SDK's shared registry serves
+   * every `ToolNode` compiled from this run's graph — so missing
+   * subagents in this gate would leave the child's
+   * `{{tool<idx>turn<turn>}}` placeholders unsubstituted. SDK
+   * defaults (~400 KB per output, 5 MB total) keep substituted
+   * payloads inside typical shell ARG_MAX limits, so no overrides
+   * are needed for the experimental rollout.
+   */
+  const enableToolOutputReferences = anyAgentHasCodeEnv(agents);
+
   return Run.create({
     runId,
     graphConfig,
@@ -826,5 +928,8 @@ export async function createRun({
     indexTokenCountMap,
     initialSessions,
     calibrationRatio,
+    ...(enableToolOutputReferences && {
+      toolOutputReferences: { enabled: true },
+    }),
   });
 }
