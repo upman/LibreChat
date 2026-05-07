@@ -26,7 +26,12 @@ const initializeOAuthReconnectManager = require('./services/initializeOAuthRecon
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { updateInterfacePermissions: updateInterfacePerms } = require('@librechat/api');
-const { getRoleByName, updateAccessPermissions, seedDatabase } = require('~/models');
+const {
+  getRoleByName,
+  updateAccessPermissions,
+  seedDatabase,
+  sweepOrphanedPreviews,
+} = require('~/models');
 const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
@@ -242,7 +247,15 @@ if (cluster.isMaster) {
     /** Seed database — tenant-scoped when DEFAULT_TENANT_ID is set */
     await tenantProvision(seedDatabase);
 
-    /** Initialize app configuration (no DB) */
+    /* Recover stuck `status: 'pending'` records from a crash mid-render.
+     * `runAsSystem` is required — `File` is tenant-isolated and strict
+     * mode rejects unscoped queries. Lazy sweep in the preview endpoint
+     * covers anything younger than the boot cutoff. */
+    runAsSystem(sweepOrphanedPreviews).catch((err) => {
+      logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
+    });
+
+    /** Initialize app configuration */
     const appConfig = await getAppConfig();
     initializeFileStorage(appConfig);
     await performStartupChecks(appConfig);
