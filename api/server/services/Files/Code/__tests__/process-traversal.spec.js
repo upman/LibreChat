@@ -32,6 +32,14 @@ jest.mock('@librechat/api', () => {
      * mock returns null in lockstep with the null `text` above so
      * downstream consumers don't see a phantom format. */
     getExtractedTextFormat: jest.fn(() => null),
+    getStorageMetadata: jest.fn(() => ({})),
+    /* Pass-through `withTimeout`: this suite asserts traversal sanitization,
+     * not deferred preview timing. */
+    withTimeout: async (promise) => promise,
+    /* These traversal cases all use non-office filenames — keep the
+     * inline (non-finalize) path so existing assertions on a single
+     * createFile call hold. */
+    hasOfficeHtmlPath: jest.fn(() => false),
     codeServerHttpAgent: new http.Agent({ keepAlive: false }),
     codeServerHttpsAgent: new https.Agent({ keepAlive: false }),
   };
@@ -79,7 +87,7 @@ const { processCodeOutput } = require('../process');
 
 const baseParams = {
   req: {
-    user: { id: 'user123' },
+    user: { id: 'user123', tenantId: 'tenantA' },
     config: {
       fileStrategy: 'local',
       imageOutputType: 'webp',
@@ -122,6 +130,7 @@ describe('processCodeOutput path traversal protection', () => {
 
     const fileArg = createFile.mock.calls[0][0];
     expect(fileArg.filename).toBe('safe-output.csv');
+    expect(fileArg.tenantId).toBe('tenantA');
   });
 
   test('sanitized name is used for image file records', async () => {
@@ -137,5 +146,6 @@ describe('processCodeOutput path traversal protection', () => {
     expect(mockSanitizeArtifactPath).toHaveBeenCalledWith('../../../chart.png');
     const fileArg = createFile.mock.calls[0][0];
     expect(fileArg.filename).toBe('safe-chart.png');
+    expect(fileArg.tenantId).toBe('tenantA');
   });
 });

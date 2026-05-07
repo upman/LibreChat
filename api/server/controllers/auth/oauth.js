@@ -162,18 +162,16 @@ function createOAuthHandler(redirectUri = domains.client) {
           if (!isEnabled(process.env.CHC_INT_ENABLED)) {
             await syncUserEntraGroupMemberships(req.user, req.user.tokenset?.access_token);
           }
-          setOpenIDAuthTokens(
-            req.user.tokenset || req.user.federatedTokens,
-            req,
-            res,
-            req.user._id.toString(),
-          );
+          setOpenIDAuthTokens(req.user.tokenset || req.user.federatedTokens, req, res, {
+            userId: req.user._id.toString(),
+            tenantId: req.user.tenantId,
+          });
 
           if (isEnabled(process.env.CHC_INT_ENABLED)) {
             await setChcTokenCookie(req.user, res, { generateToken, shouldUseSecureCookie });
           }
         } else {
-          await setAuthTokens(req.user._id, res);
+          await setAuthTokens(req.user._id, res, null, req);
         }
       }
       if (!res.headersSent) {

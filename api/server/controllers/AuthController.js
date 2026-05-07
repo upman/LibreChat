@@ -227,7 +227,11 @@ const refreshController = async (req, res) => {
         }
       }
 
-      const token = setOpenIDAuthTokens(tokenset, req, res, user._id.toString(), refreshToken);
+      const token = setOpenIDAuthTokens(tokenset, req, res, {
+        userId: user._id.toString(),
+        existingRefreshToken: refreshToken,
+        tenantId: user.tenantId,
+      });
 
       if (isEnabled(process.env.CHC_INT_ENABLED)) {
         await setChcTokenCookie(user, res, { generateToken, shouldUseSecureCookie });
@@ -274,7 +278,7 @@ const refreshController = async (req, res) => {
     const userId = payload.id;
 
     if (process.env.NODE_ENV === 'CI') {
-      const token = await setAuthTokens(userId, res);
+      const token = await setAuthTokens(userId, res, null, req);
       return res.status(200).send({ token, user });
     }
 
@@ -288,7 +292,7 @@ const refreshController = async (req, res) => {
     );
 
     if (session && session.expiration > new Date()) {
-      const token = await setAuthTokens(userId, res, session);
+      const token = await setAuthTokens(userId, res, session, req);
 
       res.status(200).send({ token, user });
     } else if (req?.query?.retry) {
