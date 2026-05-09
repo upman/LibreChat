@@ -279,7 +279,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       ...tenantCondition(tenantId),
     };
 
-    return await SystemGrant.find(filter).lean();
+    return await SystemGrant.find(filter).lean<ISystemGrant[]>();
   }
 
   const GRANTS_DEFAULT_LIMIT = 50;
@@ -303,7 +303,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       .sort({ principalType: 1, capability: 1 })
       .skip(offset)
       .limit(limit)
-      .lean();
+      .lean<ISystemGrant[]>();
   }
 
   async function countGrants(options?: {
@@ -347,7 +347,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       ...tenantCondition(tenantId),
     };
 
-    return await SystemGrant.find(filter).lean();
+    return await SystemGrant.find(filter).lean<ISystemGrant[]>();
   }
 
   /**

@@ -53,6 +53,7 @@ function createOAuthHandler(redirectUri = domains.client) {
         const token = await generateToken(req.user, sessionExpiry);
         const refreshToken =
           req.user.tokenset?.refresh_token || req.user.federatedTokens?.refresh_token;
+        const expiresAt = Date.now() + sessionExpiry;
 
         const callbackUrl = new URL(redirectUri);
         const exchangeCode = await generateAdminExchangeCode(
@@ -62,6 +63,7 @@ function createOAuthHandler(redirectUri = domains.client) {
           refreshToken,
           callbackUrl.origin,
           req.pkceChallenge,
+          expiresAt,
         );
         callbackUrl.searchParams.set('code', exchangeCode);
         logger.info(`[OAuth] Admin panel redirect with exchange code for user: ${req.user.email}`);
