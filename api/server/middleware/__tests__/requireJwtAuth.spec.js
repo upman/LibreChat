@@ -8,17 +8,39 @@
  * If the chaining is removed, these tests fail.
  */
 
+jest.mock('@librechat/data-schemas', () => {
+  const { AsyncLocalStorage } = require('node:async_hooks');
+  const tenantStorage = new AsyncLocalStorage();
+  return {
+    tenantStorage,
+    getTenantId: () => tenantStorage.getStore()?.tenantId,
+    logger: {
+      debug: jest.fn(),
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+    },
+  };
+});
+
 const { getTenantId } = require('@librechat/data-schemas');
+const passport = require('passport');
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
 let mockPassportError = null;
 
 jest.mock('passport', () => ({
-  authenticate: jest.fn(() => {
+  authenticate: jest.fn((_strategy, _options, callback) => {
     return (req, _res, done) => {
       if (mockPassportError) {
+        if (callback) {
+          return callback(mockPassportError);
+        }
         return done(mockPassportError);
+      }
+      if (callback) {
+        return callback(null, req._mockUser);
       }
       if (req._mockUser) {
         req.user = req._mockUser;
@@ -27,6 +49,14 @@ jest.mock('passport', () => ({
     };
   }),
 }));
+
+jest.mock(
+  'librechat-data-provider',
+  () => ({
+    CacheKeys: { ADMIN_OAUTH_SESSION: 'ADMIN_OAUTH_SESSION' },
+  }),
+  { virtual: true },
+);
 
 // Mock @librechat/api — the real tenantContextMiddleware is TS and cannot be
 // required directly from CJS tests. This thin wrapper mirrors the real logic
@@ -47,6 +77,7 @@ jest.mock('@librechat/api', () => {
     switchOrg: jest.fn(),
     isSwitchError: jest.fn((r) => r && typeof r.errorCode === 'string'),
     invalidateSession: jest.fn(),
+    resolveChcAdminSessionUser: jest.fn(),
   };
 });
 
@@ -57,21 +88,35 @@ jest.mock('~/models', () => ({
   findUsers: jest.fn(),
   createUser: jest.fn(),
   updateUser: jest.fn(),
+  getUserById: jest.fn(),
   provisionDeps: {},
 }));
+
+const mockAdminOAuthStore = { get: jest.fn(), set: jest.fn() };
+jest.mock('~/cache/getLogStores', () => jest.fn(() => mockAdminOAuthStore));
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 const requireJwtAuth = require('../requireJwtAuth');
 const { chcSwitchOrg, chcContextPipeline } = requireJwtAuth;
-const { switchOrg, invalidateSession, requireChcContext } = require('@librechat/api');
+const {
+  isEnabled,
+  switchOrg,
+  invalidateSession,
+  requireChcContext,
+  resolveChcAdminSessionUser,
+} = require('@librechat/api');
 
 function mockReq(user) {
   return { headers: {}, _mockUser: user };
 }
 
 function mockRes() {
-  return { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+  return {
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
+    clearCookie: jest.fn().mockReturnThis(),
+  };
 }
 
 /** Runs requireJwtAuth and returns the tenantId observed inside next(). */
@@ -90,6 +135,7 @@ function runAuth(user) {
 describe('requireJwtAuth tenant context chaining', () => {
   afterEach(() => {
     mockPassportError = null;
+    isEnabled.mockReturnValue(false);
   });
 
   it('forwards passport errors to next() without entering tenant middleware', async () => {
@@ -128,6 +174,117 @@ describe('requireJwtAuth tenant context chaining', () => {
 
   it('ALS context is not set at top-level scope (outside any request)', () => {
     expect(getTenantId()).toBeUndefined();
+  });
+});
+
+describe('requireJwtAuth CHC admin session bearer', () => {
+  beforeEach(() => {
+    mockPassportError = null;
+    process.env.CHC_INT_ENABLED = 'true';
+    process.env.JWT_SECRET = 'jwt-secret';
+    isEnabled.mockImplementation((value) => value === 'true');
+    resolveChcAdminSessionUser.mockReset();
+    requireChcContext.mockReset();
+    switchOrg.mockReset();
+    passport.authenticate.mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.CHC_INT_ENABLED;
+    delete process.env.JWT_SECRET;
+    isEnabled.mockReturnValue(false);
+  });
+
+  it('accepts a CHC admin session bearer before falling back to OpenID JWT auth', async () => {
+    const req = {
+      headers: { authorization: 'Bearer admin-session-token' },
+    };
+    const res = mockRes();
+    const user = {
+      _id: { toString: () => 'user-1' },
+      tenantId: 'org-a',
+      openidId: 'sub-1',
+      federatedTokens: { access_token: 'cp-access' },
+    };
+    resolveChcAdminSessionUser.mockResolvedValue(user);
+    requireChcContext.mockImplementation((request, _res, cb) => {
+      request.tenantId = 'org-a';
+      cb();
+    });
+
+    await new Promise((resolve) => requireJwtAuth(req, res, resolve));
+
+    expect(resolveChcAdminSessionUser).toHaveBeenCalledWith(
+      'admin-session-token',
+      expect.objectContaining({
+        store: mockAdminOAuthStore,
+        jwtSecret: 'jwt-secret',
+      }),
+    );
+    expect(req.user).toBe(user);
+    expect(requireChcContext).toHaveBeenCalled();
+    expect(passport.authenticate).not.toHaveBeenCalled();
+  });
+
+  it('falls back to OpenID JWT auth in CHC mode when the bearer is not an admin session', async () => {
+    const req = {
+      headers: { authorization: 'Bearer cp-access-token' },
+      _mockUser: { tenantId: 'org-a', openidId: 'sub-1' },
+    };
+    const res = mockRes();
+    resolveChcAdminSessionUser.mockResolvedValue(null);
+    requireChcContext.mockImplementation((request, _res, cb) => {
+      request.tenantId = 'org-a';
+      cb();
+    });
+
+    await new Promise((resolve) => requireJwtAuth(req, res, resolve));
+
+    expect(resolveChcAdminSessionUser).toHaveBeenCalledWith('cp-access-token', expect.any(Object));
+    expect(passport.authenticate).toHaveBeenCalledWith(
+      'openidJwt',
+      { session: false },
+      expect.any(Function),
+    );
+    expect(req.user).toEqual({ tenantId: 'org-a', openidId: 'sub-1' });
+    expect(requireChcContext).toHaveBeenCalled();
+  });
+
+  it('falls back to OpenID JWT auth when the CHC admin session lookup throws', async () => {
+    const req = {
+      headers: { authorization: 'Bearer cp-access-token' },
+      _mockUser: { tenantId: 'org-a', openidId: 'sub-1' },
+    };
+    const res = mockRes();
+    resolveChcAdminSessionUser.mockRejectedValue(new Error('store unavailable'));
+    requireChcContext.mockImplementation((request, _res, cb) => {
+      request.tenantId = 'org-a';
+      cb();
+    });
+
+    await new Promise((resolve) => requireJwtAuth(req, res, resolve));
+
+    expect(passport.authenticate).toHaveBeenCalledWith(
+      'openidJwt',
+      { session: false },
+      expect.any(Function),
+    );
+    expect(req.user).toEqual({ tenantId: 'org-a', openidId: 'sub-1' });
+    expect(requireChcContext).toHaveBeenCalled();
+  });
+
+  it('does not try CHC admin session auth outside CHC mode', async () => {
+    isEnabled.mockReturnValue(false);
+    const req = {
+      headers: { authorization: 'Bearer admin-session-token' },
+      _mockUser: { tenantId: 'org-a', openidId: 'sub-1' },
+    };
+    const res = mockRes();
+
+    await new Promise((resolve) => requireJwtAuth(req, res, resolve));
+
+    expect(resolveChcAdminSessionUser).not.toHaveBeenCalled();
+    expect(passport.authenticate).toHaveBeenCalledWith('jwt', { session: false });
   });
 });
 

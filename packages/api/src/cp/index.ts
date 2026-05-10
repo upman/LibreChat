@@ -17,6 +17,12 @@ export type { OrgSwitchResult, OrgSwitchError } from './switch';
 export type { ChcLoginResult, ChcLoginError, ChcLoginInput } from './login';
 export type { RefreshUserMethods } from './refresh';
 export type { StrategyUserMethods, StrategyLookupResult } from './strategy';
+export type {
+  ChcAdminSession,
+  ChcAdminSessionStore,
+  ChcAdminSessionDeps,
+  ChcAdminSessionUserDeps,
+} from './admin';
 export { fetchUserSessionDetails } from './client';
 export {
   resolveGUSD,
@@ -40,3 +46,8 @@ export {
 export type { InlineRefreshHandler } from './refresh';
 export { resolveChcStrategyUser } from './strategy';
 export { formatServicesContext } from './services';
+export {
+  buildChcAdminRefreshHooks,
+  mintChcAdminSessionToken,
+  resolveChcAdminSessionUser,
+} from './admin';

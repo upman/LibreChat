@@ -13,6 +13,7 @@ const {
   fetchUserSessionDetails,
   resolveGUSD,
   resolveTenant,
+  mintChcAdminSessionToken,
 } = require('@librechat/api');
 const { syncUserEntraGroupMemberships } = require('~/server/services/PermissionService');
 const { setAuthTokens, setOpenIDAuthTokens } = require('~/server/services/AuthService');
@@ -46,30 +47,11 @@ function createOAuthHandler(redirectUri = domains.client) {
         return;
       }
 
-      /** Check if this is an admin panel redirect (cross-origin) */
-      if (isAdminPanelRedirect(redirectUri, getAdminPanelUrl(), domains.client)) {
-        const cache = getLogStores(CacheKeys.ADMIN_OAUTH_EXCHANGE);
-        const sessionExpiry = Number(process.env.SESSION_EXPIRY) || DEFAULT_SESSION_EXPIRY;
-        const token = await generateToken(req.user, sessionExpiry);
-        const refreshToken =
-          req.user.tokenset?.refresh_token || req.user.federatedTokens?.refresh_token;
-        const expiresAt = Date.now() + sessionExpiry;
-
-        const callbackUrl = new URL(redirectUri);
-        const exchangeCode = await generateAdminExchangeCode(
-          cache,
-          req.user,
-          token,
-          refreshToken,
-          callbackUrl.origin,
-          req.pkceChallenge,
-          expiresAt,
-        );
-        callbackUrl.searchParams.set('code', exchangeCode);
-        logger.info(`[OAuth] Admin panel redirect with exchange code for user: ${req.user.email}`);
-        return res.redirect(callbackUrl.toString());
-      }
-
+      const adminPanelRedirect = isAdminPanelRedirect(
+        redirectUri,
+        getAdminPanelUrl(),
+        domains.client,
+      );
       const cpAccessToken =
         req.user?.tokenset?.access_token || req.user?.federatedTokens?.access_token;
 
@@ -125,7 +107,7 @@ function createOAuthHandler(redirectUri = domains.client) {
           );
           return res.redirect(errorUrl.toString());
         }
-      } else if (cpAccessToken) {
+      } else if (cpAccessToken && !adminPanelRedirect) {
         /**
          * Non-CHC mode with CP access token — original PoC behavior (no provisioning).
          * This path fires when CHC_INT_ENABLED is false but the OIDC provider attached
@@ -152,6 +134,57 @@ function createOAuthHandler(redirectUri = domains.client) {
         } catch (err) {
           logger.error('[OAuth] GUSD call failed, continuing without CP context:', err);
         }
+      }
+
+      /** Check if this is an admin panel redirect (cross-origin) */
+      if (adminPanelRedirect) {
+        const cache = getLogStores(CacheKeys.ADMIN_OAUTH_EXCHANGE);
+        const callbackUrl = new URL(redirectUri);
+        const sessionExpiry = Number(process.env.SESSION_EXPIRY) || DEFAULT_SESSION_EXPIRY;
+        const refreshToken =
+          req.user.tokenset?.refresh_token || req.user.federatedTokens?.refresh_token;
+
+        let token;
+        let expiresAt;
+        if (isEnabled(process.env.CHC_INT_ENABLED)) {
+          try {
+            const minted = await mintChcAdminSessionToken(
+              req.user,
+              req.user.tokenset || req.user.federatedTokens,
+              {
+                store: getLogStores(CacheKeys.ADMIN_OAUTH_SESSION),
+                jwtSecret: process.env.JWT_SECRET,
+                maxAgeMs: sessionExpiry,
+              },
+            );
+            token = minted.token;
+            expiresAt = minted.expiresAt;
+          } catch (err) {
+            logger.error('[OAuth] CHC admin session mint failed:', err);
+            callbackUrl.searchParams.set('error', 'chc_auth_failed');
+            callbackUrl.searchParams.set(
+              'error_description',
+              'Authentication with ClickHouse Cloud failed',
+            );
+            return res.redirect(callbackUrl.toString());
+          }
+        } else {
+          token = await generateToken(req.user, sessionExpiry);
+          expiresAt = Date.now() + sessionExpiry;
+        }
+
+        const exchangeCode = await generateAdminExchangeCode(
+          cache,
+          req.user,
+          token,
+          refreshToken,
+          callbackUrl.origin,
+          req.pkceChallenge,
+          expiresAt,
+        );
+        callbackUrl.searchParams.set('code', exchangeCode);
+        logger.info(`[OAuth] Admin panel redirect with exchange code for user: ${req.user.email}`);
+        return res.redirect(callbackUrl.toString());
       }
 
       /** Standard OAuth flow - set cookies and redirect */

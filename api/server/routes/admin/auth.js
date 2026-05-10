@@ -19,6 +19,7 @@ const {
   preAuthTenantMiddleware,
   applyAdminRefresh,
   AdminRefreshError,
+  buildChcAdminRefreshHooks,
 } = require('@librechat/api');
 const { loginController } = require('~/server/controllers/auth/LoginController');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
@@ -28,6 +29,7 @@ const {
   findUsers,
   generateToken,
   getUserById,
+  updateUser,
   upsertBalanceFields,
 } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
@@ -555,6 +557,23 @@ router.post(
 
       const sessionExpiry = Number(process.env.SESSION_EXPIRY) || DEFAULT_SESSION_EXPIRY;
       const expectedIssuer = openIdConfig.serverMetadata?.()?.issuer;
+      const chcMode = isEnabled(process.env.CHC_INT_ENABLED);
+      const chcHooks = chcMode
+        ? buildChcAdminRefreshHooks({
+            store: getLogStores(CacheKeys.ADMIN_OAUTH_SESSION),
+            jwtSecret: process.env.JWT_SECRET,
+            maxAgeMs: sessionExpiry,
+            getUserById,
+            updateUser,
+          })
+        : undefined;
+      const mintToken =
+        chcHooks?.mintToken ??
+        (async (user) => ({
+          token: await generateToken(user, sessionExpiry),
+          expiresAt: Date.now() + sessionExpiry,
+        }));
+      const onRefreshSuccess = chcHooks?.onRefreshSuccess;
 
       try {
         const result = await applyAdminRefresh(
@@ -579,10 +598,8 @@ router.post(
                 return false;
               }
             },
-            mintToken: async (user) => ({
-              token: await generateToken(user, sessionExpiry),
-              expiresAt: Date.now() + sessionExpiry,
-            }),
+            mintToken,
+            onRefreshSuccess,
           },
           {
             userId: typeof userId === 'string' && userId.length > 0 ? userId : undefined,

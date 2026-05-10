@@ -1,5 +1,6 @@
 const cookies = require('cookie');
 const passport = require('passport');
+const { CacheKeys } = require('librechat-data-provider');
 const { logger } = require('@librechat/data-schemas');
 const {
   isEnabled,
@@ -8,8 +9,17 @@ const {
   switchOrg,
   isSwitchError,
   invalidateSession,
+  resolveChcAdminSessionUser,
 } = require('@librechat/api');
-const { findUser, findUsers, createUser, updateUser, provisionDeps } = require('~/models');
+const {
+  findUser,
+  findUsers,
+  createUser,
+  updateUser,
+  getUserById,
+  provisionDeps,
+} = require('~/models');
+const getLogStores = require('~/cache/getLogStores');
 
 const userMethods = { findUser, findUsers, createUser, updateUser };
 
@@ -90,6 +100,39 @@ function authenticateOpenIdJwt(chcMiddleware, req, res, next) {
   })(req, res, next);
 }
 
+function getBearerToken(req) {
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader !== 'string') {
+    return undefined;
+  }
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim();
+}
+
+async function authenticateChcAdminSession(req, res, next) {
+  let user;
+  try {
+    user = await resolveChcAdminSessionUser(getBearerToken(req), {
+      store: getLogStores(CacheKeys.ADMIN_OAUTH_SESSION),
+      jwtSecret: process.env.JWT_SECRET,
+      getUserById,
+      updateUser,
+    });
+  } catch (err) {
+    logger.warn('[authenticateChcAdminSession] lookup failed; falling back to OpenID JWT auth', {
+      error: err?.message,
+    });
+    return false;
+  }
+
+  if (!user) {
+    return false;
+  }
+  req.user = user;
+  await chcContextPipeline(req, res, next);
+  return true;
+}
+
 /**
  * Custom Middleware to handle JWT authentication, with support for OpenID token reuse.
  * Switches between JWT, OpenID, and CHC authentication based on cookies and environment settings.
@@ -101,7 +144,14 @@ function authenticateOpenIdJwt(chcMiddleware, req, res, next) {
 const requireJwtAuth = (req, res, next) => {
   /** CHC mode is exclusive — skip local JWT and OpenID cookie-based auth */
   if (isEnabled(process.env.CHC_INT_ENABLED)) {
-    return authenticateOpenIdJwt(chcContextPipeline, req, res, next);
+    authenticateChcAdminSession(req, res, next)
+      .then((handled) => {
+        if (!handled && !res.headersSent) {
+          authenticateOpenIdJwt(chcContextPipeline, req, res, next);
+        }
+      })
+      .catch(next);
+    return;
   }
 
   const cookieHeader = req.headers.cookie;

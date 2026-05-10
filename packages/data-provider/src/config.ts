@@ -1838,6 +1838,10 @@ export enum CacheKeys {
    * Key for admin panel OAuth exchange codes (one-time-use, short TTL).
    */
   ADMIN_OAUTH_EXCHANGE = 'ADMIN_OAUTH_EXCHANGE',
+  /**
+   * Key for admin panel OAuth server-side sessions.
+   */
+  ADMIN_OAUTH_SESSION = 'ADMIN_OAUTH_SESSION',
 }
 
 /**

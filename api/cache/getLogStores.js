@@ -9,6 +9,8 @@ const {
   violationCache,
 } = require('@librechat/api');
 
+const ADMIN_OAUTH_SESSION_CACHE_TTL = Time.THIRTY_MINUTES;
+
 const namespaces = {
   [ViolationTypes.GENERAL]: new Keyv({ store: logFile, namespace: 'violations' }),
   [ViolationTypes.LOGINS]: violationCache(ViolationTypes.LOGINS),
@@ -55,6 +57,10 @@ const namespaces = {
   [CacheKeys.ADMIN_OAUTH_EXCHANGE]: standardCache(
     CacheKeys.ADMIN_OAUTH_EXCHANGE,
     Time.THIRTY_SECONDS,
+  ),
+  [CacheKeys.ADMIN_OAUTH_SESSION]: standardCache(
+    CacheKeys.ADMIN_OAUTH_SESSION,
+    ADMIN_OAUTH_SESSION_CACHE_TTL,
   ),
 };
 
