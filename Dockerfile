@@ -6,6 +6,12 @@ FROM node:20-alpine AS node
 RUN apk upgrade --no-cache
 RUN apk add --no-cache jemalloc
 RUN apk add --no-cache python3 py3-pip uv
+# LibreOffice for high-fidelity office-document preview rendering. Backs the
+# OFFICE_PREVIEW_LIBREOFFICE env (e.g. =pptx) added in upstream PR #12934 —
+# soffice converts DOCX/PPTX to PDF, which pdf.js then renders inside the
+# Sandpack iframe. ttf-liberation provides Arial/Times/Courier replacements
+# so text renders correctly. ~250-350 MB image-size cost, opt-in via env.
+RUN apk add --no-cache libreoffice ttf-liberation
 
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
