@@ -141,6 +141,7 @@ describe('requireJwtAuth tenant context chaining', () => {
     isEnabled.mockReturnValue(false);
     passport.authenticate.mockClear();
     passport._strategy.mockClear();
+    delete process.env.OPENID_REUSE_TOKENS;
   });
 
   it('forwards passport errors to next() without entering tenant middleware', async () => {
@@ -178,7 +179,8 @@ describe('requireJwtAuth tenant context chaining', () => {
   });
 
   it('falls back to OpenID JWT for bearer-only reuse requests', async () => {
-    isEnabled.mockReturnValue(true);
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    isEnabled.mockImplementation((value) => value === 'true');
     mockRegisteredStrategies.add('openidJwt');
     const req = mockReq(undefined, {
       _mockStrategies: {
@@ -199,7 +201,8 @@ describe('requireJwtAuth tenant context chaining', () => {
   });
 
   it('skips OpenID JWT fallback when the strategy was not registered', async () => {
-    isEnabled.mockReturnValue(true);
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    isEnabled.mockImplementation((value) => value === 'true');
     const req = mockReq(undefined, {
       _mockStrategies: {
         jwt: { user: false, info: { message: 'invalid signature' }, status: 401 },
@@ -341,7 +344,11 @@ describe('requireJwtAuth CHC admin session bearer', () => {
     await new Promise((resolve) => requireJwtAuth(req, res, resolve));
 
     expect(resolveChcAdminSessionUser).not.toHaveBeenCalled();
-    expect(passport.authenticate).toHaveBeenCalledWith('jwt', { session: false });
+    expect(passport.authenticate).toHaveBeenCalledWith(
+      'jwt',
+      { session: false },
+      expect.any(Function),
+    );
   });
 });
 
