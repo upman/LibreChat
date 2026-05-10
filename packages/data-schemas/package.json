@@ -42,9 +42,6 @@
     "url": "https://github.com/danny-avila/LibreChat/issues"
   },
   "homepage": "https://librechat.ai",
-  "optionalDependencies": {
-    "mongodb-client-encryption": "^6.5.0"
-  },
   "devDependencies": {
     "@rollup/plugin-alias": "^5.1.0",
     "@rollup/plugin-commonjs": "^29.0.0",
@@ -87,5 +84,8 @@
     "schema",
     "typescript",
     "librechat"
-  ]
+  ],
+  "optionalDependencies": {
+    "mongodb-client-encryption": "^6.5.0"
+  }
 }
