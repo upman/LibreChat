@@ -1,9 +1,11 @@
 const { SystemRoles } = require('librechat-data-provider');
 
-// --- Capture the verify callback from JwtStrategy ---
+// --- Capture JwtStrategy inputs ---
+let capturedStrategyOptions;
 let capturedVerifyCallback;
 jest.mock('passport-jwt', () => ({
-  Strategy: jest.fn((_opts, verifyCallback) => {
+  Strategy: jest.fn((opts, verifyCallback) => {
+    capturedStrategyOptions = opts;
     capturedVerifyCallback = verifyCallback;
     return { name: 'jwt' };
   }),
@@ -32,6 +34,7 @@ jest.mock('@librechat/api', () => ({
     const raw = req?.headers?.['x-chc-org-id'];
     return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
   }),
+  normalizeOpenIdIssuer: jest.requireActual('@librechat/api').normalizeOpenIdIssuer,
   math: jest.fn((val, fallback) => fallback),
 }));
 jest.mock('~/models', () => ({
@@ -63,6 +66,28 @@ const {
 const openIdJwtLogin = require('./openIdJwtStrategy');
 const { findUser, updateUser, findUsers, createUser } = require('~/models');
 
+function withEnv(env, callback) {
+  const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.entries(env).forEach(([key, value]) => {
+    if (value === undefined) {
+      delete process.env[key];
+      return;
+    }
+    process.env[key] = value;
+  });
+  try {
+    callback();
+  } finally {
+    Object.entries(previous).forEach(([key, value]) => {
+      if (value === undefined) {
+        delete process.env[key];
+        return;
+      }
+      process.env[key] = value;
+    });
+  }
+}
+
 // Helper: build a mock openIdConfig
 const mockOpenIdConfig = {
   serverMetadata: () => ({
@@ -83,6 +108,79 @@ async function invokeVerify(req, payload) {
   });
 }
 
+describe('openIdJwtStrategy – token validation', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('requires OpenID JWTs to match the configured client audience and issuer', () => {
+    withEnv({ OPENID_CLIENT_ID: 'librechat-client-id', OPENID_AUDIENCE: undefined }, () => {
+      openIdJwtLogin(mockOpenIdConfig);
+    });
+
+    expect(capturedStrategyOptions).toMatchObject({
+      audience: 'librechat-client-id',
+      passReqToCallback: true,
+    });
+    expect(capturedStrategyOptions).not.toHaveProperty('issuer');
+  });
+
+  it('also accepts OPENID_AUDIENCE for providers that mint resource-bound JWTs', () => {
+    withEnv({ OPENID_CLIENT_ID: 'librechat-client-id', OPENID_AUDIENCE: 'api://librechat' }, () => {
+      openIdJwtLogin(mockOpenIdConfig);
+    });
+
+    expect(capturedStrategyOptions).toMatchObject({
+      audience: ['librechat-client-id', 'api://librechat'],
+    });
+  });
+
+  it('rejects OpenID JWTs whose issuer does not match the configured issuer', async () => {
+    findOpenIDUser.mockResolvedValue({ user: null, error: null, migration: false });
+    openIdJwtLogin(mockOpenIdConfig);
+
+    const req = { headers: { authorization: 'Bearer tok' }, session: {} };
+    const { user, info } = await invokeVerify(req, {
+      sub: 'oidc-123',
+      email: 'test@example.com',
+      iss: 'https://other-issuer.example.com',
+      exp: 9999999999,
+    });
+
+    expect(user).toBe(false);
+    expect(info).toEqual({ message: 'Invalid issuer' });
+    expect(findOpenIDUser).not.toHaveBeenCalled();
+  });
+
+  it('allows Microsoft Entra tenant issuer values for tenant-independent metadata', async () => {
+    const entraConfig = {
+      serverMetadata: () => ({
+        issuer: 'https://login.microsoftonline.com/{tenantid}/v2.0',
+        jwks_uri: 'https://login.microsoftonline.com/common/discovery/v2.0/keys',
+      }),
+    };
+    const user = {
+      _id: { toString: () => 'user-abc' },
+      role: SystemRoles.USER,
+      provider: 'openid',
+    };
+    findOpenIDUser.mockResolvedValue({ user, error: null, migration: false });
+    updateUser.mockResolvedValue({});
+    openIdJwtLogin(entraConfig);
+
+    const req = { headers: { authorization: 'Bearer tok' }, session: {} };
+    const { user: result } = await invokeVerify(req, {
+      sub: 'oidc-123',
+      email: 'test@example.com',
+      iss: 'https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0',
+      exp: 9999999999,
+    });
+
+    expect(result).toBeTruthy();
+    expect(findOpenIDUser).toHaveBeenCalled();
+  });
+});
+
 describe('openIdJwtStrategy – token source handling', () => {
   const baseUser = {
     _id: { toString: () => 'user-abc' },
@@ -90,7 +188,12 @@ describe('openIdJwtStrategy – token source handling', () => {
     provider: 'openid',
   };
 
-  const payload = { sub: 'oidc-123', email: 'test@example.com', exp: 9999999999 };
+  const payload = {
+    sub: 'oidc-123',
+    email: 'test@example.com',
+    iss: 'https://issuer.example.com',
+    exp: 9999999999,
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -220,6 +323,7 @@ describe('openIdJwtStrategy – OPENID_EMAIL_CLAIM', () => {
     email: 'test@example.com',
     preferred_username: 'testuser',
     upn: 'test@corp.example.com',
+    iss: 'https://issuer.example.com',
     exp: 9999999999,
   };
 
@@ -365,6 +469,7 @@ describe('openIdJwtStrategy – OPENID_EMAIL_CLAIM', () => {
       sub: 'oidc-new-sub',
       preferred_username: 'legacy@corp.com',
       upn: 'legacy@corp.com',
+      iss: 'https://issuer.example.com',
       exp: 9999999999,
     };
 
@@ -403,7 +508,12 @@ describe('openIdJwtStrategy – OPENID_EMAIL_CLAIM', () => {
 });
 
 describe('openIdJwtStrategy – CHC integration', () => {
-  const payload = { sub: 'oidc-123', email: 'test@example.com', exp: 9999999999 };
+  const payload = {
+    iss: 'https://issuer.example.com',
+    sub: 'oidc-123',
+    email: 'test@example.com',
+    exp: 9999999999,
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
