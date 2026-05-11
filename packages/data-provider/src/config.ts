@@ -2010,6 +2010,10 @@ export enum ErrorTypes {
    */
   MFA_REQUIRED = 'mfa_required',
   /**
+   * CHC: Cloud token refresh requires an interactive OpenID reauthentication
+   */
+  CHC_REAUTH_REQUIRED = 'CHC_REAUTH_REQUIRED',
+  /**
    * Model refused to respond (content policy violation)
    */
   REFUSAL = 'refusal',

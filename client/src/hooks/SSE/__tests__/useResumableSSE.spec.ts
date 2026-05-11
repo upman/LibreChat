@@ -75,6 +75,7 @@ jest.mock('~/data-provider', () => ({
 const mockErrorHandler = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockClearStepMaps = jest.fn();
+const mockMaybeRedirectForChcReauth = jest.fn();
 
 jest.mock('~/hooks/SSE/useEventHandlers', () =>
   jest.fn(() => ({
@@ -103,6 +104,7 @@ jest.mock('librechat-data-provider', () => {
     })),
     removeNullishValues: jest.fn((v: unknown) => v),
     apiBaseUrl: jest.fn(() => ''),
+    maybeRedirectForChcReauth: (errorData: unknown) => mockMaybeRedirectForChcReauth(errorData),
     request: {
       post: jest.fn().mockResolvedValue({ streamId: 'stream-123' }),
       refreshToken: jest.fn(),
@@ -165,7 +167,7 @@ const getLastSSE = (): MockSSEInstance => {
   return sse;
 };
 
-describe('useResumableSSE - 404 error path', () => {
+describe('useResumableSSE - error paths', () => {
   beforeEach(() => {
     mockSSEInstances.length = 0;
     localStorage.clear();
@@ -174,6 +176,8 @@ describe('useResumableSSE - 404 error path', () => {
     mockSetIsSubmitting.mockClear();
     mockInvalidateQueries.mockClear();
     mockRemoveQueries.mockClear();
+    mockMaybeRedirectForChcReauth.mockReset();
+    mockMaybeRedirectForChcReauth.mockReturnValue(false);
   });
 
   const seedDraft = (conversationId: string) => {
@@ -255,6 +259,39 @@ describe('useResumableSSE - 404 error path', () => {
   it('closes the SSE connection on 404', async () => {
     const { sse, unmount } = await render404Scenario();
 
+    expect(sse.close).toHaveBeenCalled();
+    unmount();
+  });
+
+  it('redirects for CHC reauth 401 without refreshing or showing a stream error', async () => {
+    mockMaybeRedirectForChcReauth.mockReturnValueOnce(true);
+    const { request } = jest.requireMock('librechat-data-provider') as {
+      request: { refreshToken: jest.Mock };
+    };
+    request.refreshToken.mockClear();
+
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const sse = getLastSSE();
+    const errorBody = {
+      error_code: 'CHC_REAUTH_REQUIRED',
+      login_url: '/oauth/openid?prompt=login',
+    };
+
+    await act(async () => {
+      sse._emit('error', { responseCode: 401, data: JSON.stringify(errorBody) });
+    });
+
+    expect(mockMaybeRedirectForChcReauth).toHaveBeenCalledWith(errorBody);
+    expect(request.refreshToken).not.toHaveBeenCalled();
+    expect(mockErrorHandler).not.toHaveBeenCalled();
     expect(sse.close).toHaveBeenCalled();
     unmount();
   });

@@ -24,6 +24,8 @@ const {
   updateInterfacePermissions,
   preAuthTenantMiddleware,
   registerInlineRefreshHandler,
+  ChcReauthRequiredError,
+  isMfaRequiredError,
   createMetrics,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
@@ -110,6 +112,12 @@ const startServer = async () => {
         setOpenIDAuthTokens(tokenset, req, res, req.user?._id?.toString(), refreshToken);
         return { accessToken: tokenset.access_token };
       } catch (err) {
+        if (isMfaRequiredError(err)) {
+          logger.warn('[inlineRefreshHandler] chc_reauth_required', {
+            reason: 'mfa_required',
+          });
+          throw new ChcReauthRequiredError();
+        }
         logger.error('[inlineRefreshHandler] OpenID refresh failed', err);
         return null;
       }

@@ -1,7 +1,13 @@
 import { requireChcContext } from './middleware';
 import { _clearGUSDCache, setCachedGUSD } from './cache';
 import { GUSDAuthError } from './client';
-import { registerInlineRefreshHandler, _resetRefreshState } from './refresh';
+import {
+  CHC_REAUTH_LOGIN_URL,
+  CHC_REAUTH_REQUIRED,
+  ChcReauthRequiredError,
+  registerInlineRefreshHandler,
+  _resetRefreshState,
+} from './refresh';
 
 import type { Response, NextFunction } from 'express';
 import type { ResolvedCpContext } from './types';
@@ -63,9 +69,9 @@ function buildCachedContext(overrides: Partial<ResolvedCpContext> = {}): Resolve
 
 describe('requireChcContext', () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     _clearGUSDCache();
     _resetRefreshState();
-    mockRun.mockClear();
     mockRun.mockImplementation((_ctx: { tenantId: string }, fn: () => Promise<void>) => fn());
   });
 
@@ -448,6 +454,44 @@ describe('requireChcContext', () => {
       expect(res.status).toHaveBeenCalledWith(503);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ error_code: 'GUSD_UNAVAILABLE' }),
+      );
+    });
+
+    it('returns 401 CHC_REAUTH_REQUIRED when refresh requires MFA on GUSD 401', async () => {
+      const { fetchUserSessionDetails } = jest.requireMock('./client') as {
+        fetchUserSessionDetails: jest.Mock;
+      };
+      const { logger } = jest.requireMock('@librechat/data-schemas') as {
+        logger: { warn: jest.Mock };
+      };
+      fetchUserSessionDetails.mockRejectedValue(
+        new GUSDAuthError('GUSD request failed with status 401'),
+      );
+
+      registerInlineRefreshHandler(async () => {
+        throw new ChcReauthRequiredError();
+      });
+
+      const req = createMockReq({
+        idOnTheSource: 'cp-user-1',
+        tenantId: 'org-a',
+        federatedTokens: { access_token: 'stale-token' },
+      });
+      const res = createMockRes();
+      const next: NextFunction = jest.fn();
+
+      await requireChcContext(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Interactive ClickHouse Cloud reauthentication required',
+        error_code: CHC_REAUTH_REQUIRED,
+        login_url: CHC_REAUTH_LOGIN_URL,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[requireChcContext] chc_reauth_required',
+        expect.objectContaining({ cpUserId: 'cp-user-1', reason: 'mfa_required' }),
       );
     });
 

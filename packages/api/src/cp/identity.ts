@@ -1,10 +1,11 @@
 import { tenantStorage, logger } from '@librechat/data-schemas';
 
 import type { Response, NextFunction } from 'express';
+import type { ResolvedCpContext } from './types';
 import type { ServerRequest } from '~/types/http';
 
 import { getCachedGUSD } from './cache';
-import { fetchGUSDWithRefresh } from './refresh';
+import { fetchGUSDWithRefresh, sendChcReauthRequiredResponse } from './refresh';
 
 /**
  * Lighter CHC middleware for org-recovery endpoints (`/api/cp/orgs`, `/api/cp/switch-org`).
@@ -34,9 +35,17 @@ export async function requireChcIdentity(
   }
 
   const cpUserId = user.idOnTheSource;
-  const cpContext =
-    getCachedGUSD(cpUserId) ??
-    (await fetchGUSDWithRefresh(cpUserId, user, req, res, 'requireChcIdentity'));
+  let cpContext: ResolvedCpContext | null | undefined;
+  try {
+    cpContext =
+      getCachedGUSD(cpUserId) ??
+      (await fetchGUSDWithRefresh(cpUserId, user, req, res, 'requireChcIdentity'));
+  } catch (err) {
+    if (sendChcReauthRequiredResponse(err, res, 'requireChcIdentity', cpUserId)) {
+      return;
+    }
+    throw err;
+  }
 
   if (!cpContext) {
     res.status(503).json({

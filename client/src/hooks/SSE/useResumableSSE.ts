@@ -13,6 +13,7 @@ import {
   createPayload,
   ViolationTypes,
   removeNullishValues,
+  maybeRedirectForChcReauth,
 } from 'librechat-data-provider';
 import type { TMessage, TPayload, TSubmission, EventSubmission } from 'librechat-data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
@@ -365,6 +366,24 @@ export default function useResumableSSE(
           setShowStopButton(false);
           setStreamId(null);
           reconnectAttemptRef.current = 0;
+          return;
+        }
+
+        let reauthErrorData: unknown;
+        if (responseCode === 401 && e.data) {
+          try {
+            reauthErrorData = JSON.parse(e.data);
+          } catch {
+            reauthErrorData = undefined;
+          }
+        }
+
+        if (responseCode === 401 && maybeRedirectForChcReauth(reauthErrorData)) {
+          sse.close();
+          removeActiveJob(currentStreamId);
+          setIsSubmitting(false);
+          setShowStopButton(false);
+          setStreamId(null);
           return;
         }
 

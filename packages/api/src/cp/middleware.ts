@@ -1,11 +1,12 @@
 import { tenantStorage, logger } from '@librechat/data-schemas';
 
 import type { Response, NextFunction } from 'express';
+import type { ResolvedCpContext } from './types';
 import type { ServerRequest } from '~/types/http';
 
 import { LIBRECHAT_ORG_FEATURE } from './resolve';
 import { getCachedGUSD } from './cache';
-import { fetchGUSDWithRefresh } from './refresh';
+import { fetchGUSDWithRefresh, sendChcReauthRequiredResponse } from './refresh';
 
 /**
  * Reads and trims the `x-chc-org-id` request header. Returns undefined when the
@@ -88,9 +89,17 @@ export async function requireChcContext(
     return;
   }
 
-  const cpContext =
-    getCachedGUSD(cpUserId) ??
-    (await fetchGUSDWithRefresh(cpUserId, user, req, res, 'requireChcContext'));
+  let cpContext: ResolvedCpContext | null | undefined;
+  try {
+    cpContext =
+      getCachedGUSD(cpUserId) ??
+      (await fetchGUSDWithRefresh(cpUserId, user, req, res, 'requireChcContext'));
+  } catch (err) {
+    if (sendChcReauthRequiredResponse(err, res, 'requireChcContext', cpUserId)) {
+      return;
+    }
+    throw err;
+  }
 
   if (!cpContext) {
     res.status(503).json({

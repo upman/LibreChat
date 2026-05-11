@@ -6,6 +6,83 @@ import { ErrorTypes } from './config';
 import type * as t from './types';
 
 let _isRedirectingForAuthError = false;
+let _isRedirectingForChcReauth = false;
+
+const POST_LOGIN_REDIRECT_KEY = 'post_login_redirect_to';
+const CHC_REAUTH_FALLBACK_LOGIN_URL = '/oauth/openid?prompt=login';
+
+interface ChcReauthErrorBody {
+  error_code?: unknown;
+  login_url?: unknown;
+  loginUrl?: unknown;
+}
+
+function asChcReauthErrorBody(value: unknown): ChcReauthErrorBody | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  return value as ChcReauthErrorBody;
+}
+
+export function normalizeChcLoginUrl(loginUrl: unknown): string {
+  if (typeof loginUrl !== 'string') {
+    return CHC_REAUTH_FALLBACK_LOGIN_URL;
+  }
+
+  const trimmed = loginUrl.trim();
+  if (!trimmed) {
+    return CHC_REAUTH_FALLBACK_LOGIN_URL;
+  }
+
+  if (trimmed.startsWith('//')) {
+    return CHC_REAUTH_FALLBACK_LOGIN_URL;
+  }
+
+  if (trimmed.startsWith('/') || /^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  return CHC_REAUTH_FALLBACK_LOGIN_URL;
+}
+
+function persistCurrentRedirectTarget(): void {
+  try {
+    const loginRedirect = endpoints.buildLoginRedirectUrl();
+    const queryIndex = loginRedirect.indexOf('?');
+    const redirectTo =
+      queryIndex === -1
+        ? null
+        : new URLSearchParams(loginRedirect.slice(queryIndex + 1)).get('redirect_to');
+    if (redirectTo) {
+      window.sessionStorage.setItem(POST_LOGIN_REDIRECT_KEY, redirectTo);
+    }
+  } catch {
+    // Redirect preservation is best-effort; reauth should still proceed.
+  }
+}
+
+function buildChcLoginHref(loginUrl: string): string {
+  if (/^https?:\/\//i.test(loginUrl)) {
+    return loginUrl;
+  }
+  return `${endpoints.apiBaseUrl()}${loginUrl}`;
+}
+
+export function maybeRedirectForChcReauth(errorData: unknown): boolean {
+  const body = asChcReauthErrorBody(errorData);
+  if (body?.error_code !== ErrorTypes.CHC_REAUTH_REQUIRED) {
+    return false;
+  }
+
+  if (_isRedirectingForChcReauth) {
+    return true;
+  }
+
+  _isRedirectingForChcReauth = true;
+  persistCurrentRedirectTarget();
+  window.location.href = buildChcLoginHref(normalizeChcLoginUrl(body.login_url ?? body.loginUrl));
+  return true;
+}
 
 async function _get<T>(url: string, options?: AxiosRequestConfig): Promise<T> {
   const response = await axios.get(url, { ...options });
@@ -100,6 +177,10 @@ if (typeof window !== 'undefined') {
       }
       if (originalRequest.url?.includes('/api/auth/logout') === true) {
         return Promise.reject(error);
+      }
+
+      if (error.response.status === 401 && maybeRedirectForChcReauth(error.response.data)) {
+        return new Promise(() => {});
       }
 
       if (error.response.status === 403 && !_isRedirectingForAuthError) {

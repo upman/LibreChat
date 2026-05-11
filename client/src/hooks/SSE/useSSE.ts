@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
 import { SSE } from 'sse.js';
 import { useSetRecoilState } from 'recoil';
-import { request, createPayload, removeNullishValues } from 'librechat-data-provider';
+import {
+  request,
+  createPayload,
+  removeNullishValues,
+  maybeRedirectForChcReauth,
+} from 'librechat-data-provider';
 import type { TMessage, TPayload, TSubmission, EventSubmission } from 'librechat-data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData } from '~/common';
@@ -190,6 +195,21 @@ export default function useSSE(
     });
 
     sse.addEventListener('error', async (e: MessageEvent) => {
+      let data: TResData | undefined;
+      try {
+        data = e.data ? (JSON.parse(e.data) as TResData) : undefined;
+      } catch (error) {
+        console.error(error);
+      }
+
+      /* @ts-ignore */
+      if (e.responseCode === 401 && maybeRedirectForChcReauth(data)) {
+        sse.close();
+        setIsSubmitting(false);
+        setShowStopButton(false);
+        return;
+      }
+
       /* @ts-ignore */
       if (e.responseCode === 401) {
         /* token expired, refresh and retry */
@@ -216,12 +236,7 @@ export default function useSSE(
       console.log('error in server stream.');
       (startupConfig?.balance?.enabled ?? false) && balanceQuery.refetch();
 
-      let data: TResData | undefined = undefined;
-      try {
-        data = JSON.parse(e.data) as TResData;
-      } catch (error) {
-        console.error(error);
-        console.log(e);
+      if (e.data && data == null) {
         setIsSubmitting(false);
       }
 

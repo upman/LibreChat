@@ -19,12 +19,14 @@ import { setTokenHeader } from '../src/headers-helpers';
 const mockAdapter = jest.fn();
 let originalAdapter: typeof axios.defaults.adapter;
 let savedLocation: Location;
+let normalizeChcLoginUrl: (loginUrl: unknown) => string;
 
 beforeAll(async () => {
   originalAdapter = axios.defaults.adapter;
   axios.defaults.adapter = mockAdapter;
 
-  await import('../src/request');
+  const requestModule = await import('../src/request');
+  normalizeChcLoginUrl = requestModule.normalizeChcLoginUrl;
 });
 
 beforeEach(() => {
@@ -38,6 +40,7 @@ afterAll(() => {
 
 afterEach(() => {
   delete axios.defaults.headers.common['Authorization'];
+  sessionStorage.clear();
   Object.defineProperty(window, 'location', {
     value: savedLocation,
     writable: true,
@@ -300,6 +303,49 @@ describe('axios 401 interceptor — Authorization header guard', () => {
 
     const refreshCall = mockAdapter.mock.calls[1];
     expect(refreshCall[0].url).toContain('api/auth/refresh');
+  });
+});
+
+describe('axios CHC reauth interceptor', () => {
+  it('falls back for protocol-relative login URLs', () => {
+    expect(normalizeChcLoginUrl('//evil.example/login')).toBe('/oauth/openid?prompt=login');
+  });
+
+  it('redirects to provided OpenID login URL and preserves the current path', async () => {
+    setTokenHeader('valid-token');
+
+    setWindowLocation({
+      href: 'http://localhost/c/some-conversation?model=gpt-4#turn',
+      pathname: '/c/some-conversation',
+      search: '?model=gpt-4',
+      hash: '#turn',
+    } as Partial<Location>);
+
+    mockAdapter.mockRejectedValueOnce({
+      response: {
+        status: 401,
+        data: {
+          error_code: 'CHC_REAUTH_REQUIRED',
+          login_url: '/oauth/openid?prompt=login',
+        },
+      },
+      config: { url: '/api/agents/chat', headers: {} },
+    });
+
+    const outcome = await Promise.race([
+      axios.post('/api/agents/chat', {}).then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 50)),
+    ]);
+
+    expect(outcome).toBe('pending');
+    expect(mockAdapter).toHaveBeenCalledTimes(1);
+    expect(window.location.href).toBe('/oauth/openid?prompt=login');
+    expect(sessionStorage.getItem('post_login_redirect_to')).toBe(
+      '/c/some-conversation?model=gpt-4#turn',
+    );
   });
 });
 

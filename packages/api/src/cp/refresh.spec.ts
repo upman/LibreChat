@@ -21,6 +21,11 @@ import {
   isAccessTokenStale,
   coalescedInlineRefresh,
   registerInlineRefreshHandler,
+  ChcReauthRequiredError,
+  CHC_REAUTH_REQUIRED,
+  MFA_REQUIRED,
+  isMfaRequiredError,
+  toChcReauthRequiredError,
   _resetRefreshState,
 } from './refresh';
 import { fetchUserSessionDetails } from './client';
@@ -398,5 +403,74 @@ describe('coalescedInlineRefresh', () => {
 
     const result = await coalescedInlineRefresh('user-1', req, res);
     expect(result).toBeNull();
+  });
+
+  it('re-throws ChcReauthRequiredError when handler throws directly', async () => {
+    registerInlineRefreshHandler(async () => {
+      throw new ChcReauthRequiredError();
+    });
+
+    const req = {} as unknown as import('~/types/http').ServerRequest;
+    const res = {} as unknown as import('express').Response;
+
+    await expect(coalescedInlineRefresh('user-1', req, res)).rejects.toBeInstanceOf(
+      ChcReauthRequiredError,
+    );
+  });
+
+  it('detects mfa_required in nested OpenID errors', () => {
+    const error = new Error('refresh failed');
+    error.cause = {
+      error: 'mfa_required',
+      error_description: 'Multifactor authentication required',
+    };
+
+    expect(isMfaRequiredError(error)).toBe(true);
+  });
+
+  it('detects mfa_required via error_code and code fields', () => {
+    expect(isMfaRequiredError({ error_code: MFA_REQUIRED })).toBe(true);
+    expect(isMfaRequiredError({ code: MFA_REQUIRED })).toBe(true);
+  });
+
+  it('detects mfa_required through response.data nesting', () => {
+    expect(isMfaRequiredError({ response: { data: { error: MFA_REQUIRED } } })).toBe(true);
+  });
+
+  it('stops mfa_required recursion at the depth limit', () => {
+    const circular: { cause?: unknown } = {};
+    circular.cause = circular;
+
+    expect(isMfaRequiredError(circular)).toBe(false);
+  });
+
+  it('normalizes duck-typed CHC reauth errors from errorCode to a concrete error', () => {
+    const error = toChcReauthRequiredError({ errorCode: CHC_REAUTH_REQUIRED });
+
+    expect(error).toBeInstanceOf(ChcReauthRequiredError);
+    expect(error?.reason).toBe(MFA_REQUIRED);
+    expect(error?.loginUrl).toBe('/oauth/openid?prompt=login');
+  });
+
+  it('normalizes duck-typed CHC reauth errors with custom login URLs', () => {
+    const snakeCase = toChcReauthRequiredError({
+      error_code: CHC_REAUTH_REQUIRED,
+      login_url: '/custom-openid',
+      reason: MFA_REQUIRED,
+    });
+    const camelCase = toChcReauthRequiredError({
+      code: CHC_REAUTH_REQUIRED,
+      loginUrl: '/custom-openid-camel',
+    });
+
+    expect(snakeCase?.loginUrl).toBe('/custom-openid');
+    expect(snakeCase?.reason).toBe(MFA_REQUIRED);
+    expect(camelCase?.loginUrl).toBe('/custom-openid-camel');
+  });
+
+  it('returns null for values that are not CHC reauth errors', () => {
+    expect(toChcReauthRequiredError({ error: 'something_else' })).toBeNull();
+    expect(toChcReauthRequiredError('string')).toBeNull();
+    expect(toChcReauthRequiredError(null)).toBeNull();
   });
 });

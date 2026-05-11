@@ -38,12 +38,18 @@ export { findOrCreateTenantUser, findLastTenantForCpUser, buildTenantUserInput }
 export { switchOrg, isSwitchError } from './switch';
 export { handleChcLogin, isChcLoginError } from './login';
 export {
+  CHC_REAUTH_REQUIRED,
+  CHC_REAUTH_LOGIN_URL,
+  MFA_REQUIRED,
+  ChcReauthRequiredError,
+  isMfaRequiredError,
+  isChcReauthRequiredError,
   resolveChcRefreshUser,
   refreshChcContext,
   setChcTokenCookie,
   registerInlineRefreshHandler,
 } from './refresh';
-export type { InlineRefreshHandler } from './refresh';
+export type { InlineRefreshHandler, InlineRefreshResult } from './refresh';
 export { resolveChcStrategyUser } from './strategy';
 export { formatServicesContext } from './services';
 export {

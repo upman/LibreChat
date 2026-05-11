@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { ErrorTypes } from 'librechat-data-provider';
 import { runAsSystem, runAsTenant, logger } from '@librechat/data-schemas';
 
 import type { Response } from 'express';
@@ -14,7 +15,136 @@ import { getCachedGUSD, getOrFetchGUSD, GUSD_TTL_S } from './cache';
 export type InlineRefreshHandler = (
   req: ServerRequest,
   res: Response,
-) => Promise<{ accessToken: string } | null>;
+) => Promise<InlineRefreshResult | null>;
+
+export const CHC_REAUTH_REQUIRED = ErrorTypes.CHC_REAUTH_REQUIRED;
+export const CHC_REAUTH_LOGIN_URL = '/oauth/openid?prompt=login';
+export const MFA_REQUIRED = ErrorTypes.MFA_REQUIRED;
+
+interface InlineRefreshSuccess {
+  accessToken: string;
+}
+
+/** Public result contract for inline refresh handlers. */
+export type InlineRefreshResult = InlineRefreshSuccess;
+
+interface ErrorShape {
+  error?: unknown;
+  error_code?: unknown;
+  errorCode?: unknown;
+  code?: unknown;
+  cause?: unknown;
+  reason?: unknown;
+  login_url?: unknown;
+  loginUrl?: unknown;
+  response?: {
+    data?: unknown;
+  };
+}
+
+export class ChcReauthRequiredError extends Error {
+  errorCode = CHC_REAUTH_REQUIRED;
+  loginUrl = CHC_REAUTH_LOGIN_URL;
+  reason: typeof MFA_REQUIRED;
+
+  constructor(reason: typeof MFA_REQUIRED = MFA_REQUIRED, loginUrl = CHC_REAUTH_LOGIN_URL) {
+    super('ClickHouse Cloud interactive reauthentication required');
+    this.name = 'ChcReauthRequiredError';
+    this.reason = reason;
+    this.loginUrl = loginUrl;
+    Object.setPrototypeOf(this, ChcReauthRequiredError.prototype);
+  }
+}
+
+function asErrorShape(value: unknown): ErrorShape | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  return value as ErrorShape;
+}
+
+function isMfaValue(value: unknown): value is typeof MFA_REQUIRED {
+  return value === MFA_REQUIRED;
+}
+
+export function isMfaRequiredError(error: unknown, depth = 0): boolean {
+  if (depth > 5) {
+    return false;
+  }
+
+  const shape = asErrorShape(error);
+  if (!shape) {
+    return false;
+  }
+
+  if (isMfaValue(shape.error) || isMfaValue(shape.error_code) || isMfaValue(shape.code)) {
+    return true;
+  }
+
+  if (shape.cause && isMfaRequiredError(shape.cause, depth + 1)) {
+    return true;
+  }
+
+  return shape.response?.data ? isMfaRequiredError(shape.response.data, depth + 1) : false;
+}
+
+function isChcReauthCode(value: unknown): boolean {
+  return value === CHC_REAUTH_REQUIRED;
+}
+
+function getChcReauthLoginUrl(shape: ErrorShape): string {
+  const loginUrl = shape.loginUrl ?? shape.login_url;
+  return typeof loginUrl === 'string' && loginUrl.trim() ? loginUrl : CHC_REAUTH_LOGIN_URL;
+}
+
+export function toChcReauthRequiredError(error: unknown): ChcReauthRequiredError | null {
+  if (error instanceof ChcReauthRequiredError) {
+    return error;
+  }
+
+  const shape = asErrorShape(error);
+  if (!shape) {
+    return null;
+  }
+
+  if (
+    !isChcReauthCode(shape.errorCode) &&
+    !isChcReauthCode(shape.error_code) &&
+    !isChcReauthCode(shape.code)
+  ) {
+    return null;
+  }
+
+  const reason = isMfaValue(shape.reason) ? shape.reason : MFA_REQUIRED;
+  return new ChcReauthRequiredError(reason, getChcReauthLoginUrl(shape));
+}
+
+export function isChcReauthRequiredError(error: unknown): boolean {
+  return toChcReauthRequiredError(error) !== null;
+}
+
+export function sendChcReauthRequiredResponse(
+  error: unknown,
+  res: Response,
+  logLabel: string,
+  cpUserId: string,
+): boolean {
+  const reauthError = toChcReauthRequiredError(error);
+  if (!reauthError) {
+    return false;
+  }
+
+  logger.warn(`[${logLabel}] chc_reauth_required`, {
+    cpUserId,
+    reason: reauthError.reason,
+  });
+  res.status(401).json({
+    error: 'Interactive ClickHouse Cloud reauthentication required',
+    error_code: CHC_REAUTH_REQUIRED,
+    login_url: reauthError.loginUrl ?? CHC_REAUTH_LOGIN_URL,
+  });
+  return true;
+}
 
 let _inlineRefreshHandler: InlineRefreshHandler | null = null;
 
@@ -70,8 +200,17 @@ export async function coalescedInlineRefresh(
   }
 
   const work = handler(req, res)
-    .then((result) => result?.accessToken ?? null)
+    .then((result) => {
+      if (!result) {
+        return null;
+      }
+      return result.accessToken;
+    })
     .catch((err) => {
+      const reauthError = toChcReauthRequiredError(err);
+      if (reauthError) {
+        throw reauthError;
+      }
       logger.error('[coalescedInlineRefresh] handler threw', err);
       return null;
     })
